@@ -268,9 +268,21 @@ COMMENT ON COLUMN menus.creator IS '创建人';
 
 
 
+在 PostgreSQL 中可以使用以下几种方式连接数据库：
+
+**一、使用命令行工具`psql`**
+
+假设你的数据库名为`mydb`，用户名为`myuser`：
+
+plaintext
 
 
 
+Copy
+
+```plaintext
+psql -h localhost -U myuser mydb
+```
 
 
 

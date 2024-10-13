@@ -279,3 +279,196 @@ git commit -m "首次提交"
 git branch -M main 
 git remote add origin git@github.com:Whuichenggong/-typro-.git
  git push -u origin main
+
+
+
+
+
+
+
+```bash
+ git remote remove origin
+   git remote add origin git@github.com:Whuichenggong/-typro-.git
+```
+
+1. **检查并推送 `main` 分支**
+
+```bash
+   git push origin main
+```
+
+1. **检查本地分支**：
+   如果您不确定本地有哪些分支，可以使用以下命令查看：
+
+
+
+```bash
+   git branch -a
+```
+
+1. **如果需要推送 `dev` 分支**：
+   确保 `dev` 分支存在并且您已经切换到该分支：
+
+
+
+```bash
+   git checkout dev
+   git push origin dev
+```
+
+1. **验证 URL**：
+   使用 `git remote -v` 检查更新后的远程 URL 是否正确：
+
+
+
+```bash
+   git remote -v
+```
+
+确保您使用的 URL 是正确的，并且没有包含任何不必要的字符，如波浪号 (`~`)。这样可以避免远程仓库识别错误和推送问题。
+
+
+
+
+
+
+
+30413@xiaoxinxiaohao MINGW64 /e/实验室软件管理 (master)
+$      git config --global core.autocrlf true
+
+30413@xiaoxinxiaohao MINGW64 /e/实验室软件管理 (master)
+$      git config --global core.autocrlf input
+
+30413@xiaoxinxiaohao MINGW64 /e/实验室软件管理 (master)
+
+
+
+
+
+
+
+```bash
+git checkout -b main
+git push -u origin main
+# 或者
+git checkout -b master
+git push -u origin master
+```
+
+```bash
+git checkout main
+# 或者
+git checkout master
+```
+
+```bash
+git push -u origin <branch_name>:<branch_name>
+```
+
+
+
+**安装大文件**
+
+Git LFS（Large File Storage）是一种用于管理大文件的工具，主要与 Git 版本控制系统配合使用。
+
+**一、作用**
+
+当在使用 Git 进行版本控制时，如果项目中包含一些大型文件，如视频、音频、大型数据集等，会带来以下问题：
+
+1. 存储和传输效率低下：Git 仓库会变得非常大，克隆和推送操作会变得很慢，占用大量的存储空间和网络带宽。
+2. 性能问题：会影响 Git 的整体性能，特别是在处理历史记录和分支合并时。
+
+Git LFS 通过将大文件存储在单独的服务器上，并在 Git 仓库中只保留对这些大文件的指针，从而解决了这些问题。这样可以大大减小 Git 仓库的大小，提高存储和传输效率，同时不影响 Git 的正常使用。
+
+**二、工作原理**
+
+1. 安装和配置 Git LFS 后，当你添加一个大文件到 Git 仓库时，Git LFS 会自动识别该文件，并将其上传到指定的 LFS 服务器。
+2. 在 Git 仓库中，只会存储该文件的指针信息，而不是实际的文件内容。
+3. 当其他人克隆这个仓库时，Git LFS 会自动从 LFS 服务器下载大文件，确保他们能够获取完整的项目。
+
+**三、使用步骤**
+
+1. 安装：
+   - 在命令行中运行 `git lfs install` 来安装 Git LFS。
+2. 追踪大文件类型：
+   - 使用 `git lfs track "<file pattern>"` 命令来告诉 Git LFS 哪些文件类型需要被追踪。例如，`git lfs track "*.mp4"` 会追踪所有的 MP4 文件。
+3. 添加和提交：
+   - 像平常一样使用 `git add` 和 `git commit` 命令来添加和提交文件。Git LFS 会自动处理被追踪的大文件。
+4. 推送和拉取：
+   - 使用 `git push` 和 `git pull` 命令来推送和拉取仓库。Git LFS 会自动处理大文件的上传和下载。
+
+**四、适用场景**
+
+1. 软件开发项目中包含大型二进制文件，如游戏开发中的资源文件、软件开发中的安装包等。
+2. 数据科学项目中包含大型数据集，如图像数据集、文本数据集等。
+3. 多媒体项目中包含视频、音频文件等。
+
+
+
+```bash
+git add <文件名>
+```
+
+或者添加所有修改过的文件：
+
+bash
+
+
+
+Copy
+
+```bash
+   git add .
+```
+
+1. **提交更改**：
+   使用 `git commit` 命令将暂存区的更改提交到本地仓库：
+
+bash
+
+
+
+Copy
+
+```bash
+   git commit -m "您的提交信息"
+```
+
+如果您只是快速提交，可以使用 `-a` 参数自动暂存所有已修改的文件，并提交：
+
+bash
+
+
+
+Copy
+
+```bash
+   git commit -a -m "您的提交信息"
+```
+
+1. **推送到远程仓库**：
+   使用 `git push` 命令将提交的更改推送到远程的 `main` 分支：
+
+bash
+
+
+
+Copy
+
+```bash
+   git push origin main
+```
+
+如果远程仓库有新的提交，您可能需要先拉取这些更改并合并到您的本地仓库中，然后再推送：
+
+bash
+
+
+
+Copy
+
+```bash
+   git pull origin main
+   git push origin main
+```
+

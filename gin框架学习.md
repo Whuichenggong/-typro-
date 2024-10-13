@@ -654,5 +654,163 @@ datetime=2006-01-02
 
 **自定义错误信息**
 
+## 第七天
 
+
+
+**单文件上传**
+
+~~~go
+//上传单文件
+	router.POST("/upload", func(c *gin.Context) {
+		file, _ := c.FormFile("file")
+
+		readerFile, _ := file.Open()
+
+		writerFile, _ := os.Create("./upload/管道通信.png")
+		defer writerFile.Close()
+		n, _ := io.Copy(writerFile, readerFile)
+		fmt.Println(n)
+
+		//data, _ := io.ReadAll(readerFile) //读取上传的文件
+		//fmt.Println(string(data))
+
+		//fmt.Println(file.Size / 1024) //字节
+		//fmt.Println(file.Filename)
+		//c.SaveUploadedFile(file, "./upload/目录结构.png") //将文件上传至upload这个文件目录下
+		c.JSON(200, gin.H{"msg": "上传成功"})
+	})
+~~~
+
+ **多文件上传**
+
+~~~go
+	//上传多文件
+	router.POST("/uploads", func(c *gin.Context) {
+		form, _ := c.MultipartForm()
+		files, _ := form.File["upload[]"]
+		for _, file := range files {
+			c.SaveUploadedFile(file, "./upload/"+file.Filename)
+		}
+		c.JSON(200, gin.H{"msg": fmt.Sprintf("成功上传 %d 个文件 ", len(files))})
+	})
+
+~~~
+
+
+
+## 第八天
+
+**文件下载**
+
+~~~go
+package main
+
+import "github.com/gin-gonic/gin"
+
+func main() {
+	router := gin.Default()
+	router.GET("/download", func(c *gin.Context) {
+		c.File("upload/管道通信.png")
+	})
+
+	router.Run(":4324")
+}
+
+~~~
+
+请求代码路径
+
+```go
+c.File("E:\\study_gin\\view\\File_download.go")
+```
+
+返回这个路径下的代码
+
+
+
+**有些响应 比如图片 浏览器就会显示这个图片而不是下载 我们必须唤醒浏览器的下载行为**
+
+必须得加上这段代码
+
+```go
+c.Header("content-type", "application/octet-stream")
+```
+
+但是下载完成后的 文件是没有特征的名字 我们需要加入名字
+
+```go
+c.Header("Content-Disposition", "attachment; filename="+"尝试.go") //设置下载的文件名称
+```
+
+
+
+**注意： 如果浏览器请求的数据是前端的 可能是浏览器的缓存问题 需要在url中加入查询参数 例如 http://… ?xx=1…..**
+
+
+
+或者加入时间参数  http://…?time=….；
+
+new Date().getTime()//获取时间 使得每一次请求都是不同的请求 
+
+
+
+**前后端模式下文件下载**
+
+后端只需要响应一个文件数据
+
+文件名和其他信息写在请求头中
+
+~~~
+c.Header("filename","xxx.png")
+c.File("uploads/12.png")//mei'you'fan
+~~~
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## 第几天
+
+**如何调试文件上传接口**
+
+**上传文件的最重要的是调通接口**
+
+上传一个图片 并不需要什么按钮 并不需要什么界面 不需要。。。
+
+**只需要一个http请求搞定文件上传**
+
+~~~http
+Send Request
+POST /upload/single HTTP/1.1
+Host: 
+Content-Type:
+
+---aaa
+Content-Disposition
+filename="small.jpg"
+Content-Type:image/jpeg
+
+//这个位置要填写的应该是文件的二进制数据并将传给服务器
+//有一个插件 就是你输入下面的格式 就将其转换为二进制数据
+<./small.jpg
+---aaa
+
+~~~
 

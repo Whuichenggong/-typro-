@@ -449,8 +449,8 @@ testQueries = New(&DBAdapter{conn})
 给gpt看完接口定义之后
 由于你的 DBTX 接口使用了 pgx 库，你可以使用 pgx 的 Conn 类型而不是 *sql.DB。这里是一个简单的解决方案：
 使用 pgx 连接：确保在代码中使用 pgx 的连接，而不是 *sql.DB。修改你的数据库连接部分：
-go
-复制代码
+
+
 import (
 	"context"
 	"log"
@@ -1366,7 +1366,7 @@ ROLLBACK;
 
 
 
-#### postgres lock：帮助查询哪里有锁
+#### 5.postgres lock：帮助查询哪里有锁
 
 The following query may be helpful to see what processes are blocking SQL statements (these only find row-level locks, not object-level locks).
 
@@ -1474,7 +1474,7 @@ SERIALIZABLE:
 
 
 
-#### mysql选择隔离级别
+#### 5.mysql选择隔离级别
 
 ~~~sql
 set sexxion transaction isolation level read commited;
@@ -1482,7 +1482,7 @@ set sexxion transaction isolation level read commited;
 select @@一种隔离级别
 ~~~
 
-#### postgresql选择隔离级别 只有三个
+#### 6.postgresql选择隔离级别 只有三个
 
 ~~~
 在postgresql中 未提交和已提交是一个级别
@@ -1535,7 +1535,7 @@ golang migrate
 
 ### 十五.RESTful HEEP API
 
-#### 创建api文件夹
+#### 1.创建api文件夹
 
 **account.go**
 
@@ -1694,7 +1694,3567 @@ PostgreSQL 数据库：
 
 用postman请求时：//查询参数
 
-page_id     1
+**page_id     1**
 
-page_size   5
+**page_size   5**
 
+**在使用多组查找的时候没有找到用户？？？**
+
+目前为止还是无法解决
+
+-----
+
+找了喜春学哥帮我找到了问题的所在在ListAccounts中 传进去的arg.Owner是个空值导致了出现了问题 把arg.Owner改成一个数据库中具体的值 就能找到问题的所在
+
+~~~go
+func (q *Queries) ListAccounts(ctx context.Context, arg ListAccountsParams) ([]Account, error) {
+	rows, err := q.db.Query(ctx, listAccounts, arg.Owner/*问题所在*/, arg.Limit, arg.Offset)
+~~~
+
+
+
+---
+
+#### 2.模拟数据库测试
+
+~~~shell
+使用mock
+ go get github.com/golang/mock/mockgen@v1.6.0
+ 
+PS E:\projects\simplebank\db\mock> mockgen -destination db/mock/store.go project/simplebank/db/sqlc Store 
+~~~
+
+#### 3.account_test.go
+
+
+
+出现的问题
+
+----
+
+你提到的问题是由于 `mock_sqlc.MockStore` 未完全实现 `db.Store` 接口，特别是缺少 `createTransfer` 方法。为了解决这个问题，您可以采取以下步骤：
+
+解决步骤：
+
+1. **确认 `db.Store` 接口的定义：**
+
+首先，确保 `db.Store` 接口定义了所有需要的方法。特别是，确认接口中是否包含 `createTransfer` 方法。
+
+也就是：
+
+~~~
+在你当前的测试代码中，store := mockdb.NewMockStore(ctrl) 返回的确实是 *mockdb.MockStore 类型，而 NewServer 需要的参数是 db.Store 接口类型。那么为什么没有类型错误呢？这是因为在 Go 中，接口是基于方法集实现的，而 *mockdb.MockStore 实现了 db.Store 接口中的所有方法。
+
+具体原因分析：
+接口实现方式：在 Go 语言中，接口并不关心你传递的具体类型（如 *mockdb.MockStore），它只关心该类型是否实现了接口中定义的所有方法。如果 *mockdb.MockStore 实现了 db.Store 接口的所有方法，那么它就可以被赋值给 db.Store 类型的变量。
+
+gomock 的自动生成：你使用 gomock 生成了 *mockdb.MockStore，这个 mock 类型会模拟 db.Store 接口的所有方法。因为它是通过 gomock 自动生成的，并且已经包含了 db.Store 中的所有方法，所以它实际上是符合 db.Store 接口的实现。
+
+类型匹配：在 Go 中，赋值 *mockdb.MockStore 给 db.Store 类型是可以的，因为 *mockdb.MockStore 实现了 db.Store 接口。即便 *mockdb.MockStore 是一个具体类型，只要它的方法集与 db.Store 接口的方法集匹配，Go 会认为它是一个合法的接口实现。
+
+为什么没有错误？
+由于 *mockdb.MockStore 实现了 db.Store 接口的所有方法，Go 编译器允许将 *mockdb.MockStore 传递给 NewServer 这个需要 db.Store 类型的函数参数。具体的原因是：
+
+NewMockStore 生成的 mock 类型实现了 db.Store 的所有方法，因此符合 db.Store 接口。
+在 Go 语言中，接口实现是隐式的，不需要显式声明实现接口，只要结构体的方法集与接口匹配即可。
+~~~
+
+方法 1：使用类型断言验证
+
+在 Go 中，你可以通过**静态类型检查**来验证一个类型是否实现了某个接口。具体方法是使用以下代码：
+
+```
+var _ db.Store = (*mockdb.MockStore)(nil)
+```
+
+---
+
+
+
+
+
+~~~go
+package api
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	db "project/simplebank/db/sqlc"
+	"project/simplebank/util"
+	"testing"
+
+	mockdb "project/simplebank/db/mock"
+
+	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/require"
+)
+
+func TestGetAccountAPI(t *testing.T) {
+	config, err := util.LoadConfig(".")
+	if err != nil {
+		fmt.Println("配置文件出错")
+	}
+	//user, _ := randomUser(t)
+	account := randomAccount()
+	testCases := []struct {
+		name      string
+		accountID int64
+		//setupAuth     func(t *testing.T, request *http.Request, tokenMaker token.Maker)
+		buildStubs    func(store *mockdb.MockStore)
+		checkResponse func(t *testing.T, recoder *httptest.ResponseRecorder)
+	}{
+		{
+			name:      "OK",
+			accountID: account.ID,
+			// setupAuth: func(t *testing.T, request *http.Request, tokenMaker token.Maker) {
+			// 	addAuthorization(t, request, tokenMaker, authorizationTypeBearer, user.Username, user.Role, time.Minute)
+			// },
+			buildStubs: func(store *mockdb.MockStore) {
+				store.EXPECT().
+					GetAccount(gomock.Any(), gomock.Eq(account.ID)).
+					Times(1).
+					Return(account, nil)
+			},
+			checkResponse: func(t *testing.T, recorder *httptest.ResponseRecorder) {
+				require.Equal(t, http.StatusOK, recorder.Code)
+				requireBodyMatchAccount(t, recorder.Body, account)
+			},
+		},
+	}
+
+	for i := range testCases {
+		tc := testCases[i]
+
+		t.Run(tc.name, func(t *testing.T) {
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			store := mockdb.NewMockStore(ctrl)
+			tc.buildStubs(store)
+
+			server, _ := NewServer(config, store)
+
+			recorder := httptest.NewRecorder()
+
+			url := fmt.Sprintf("/accounts/%d", tc.accountID)
+			request, err := http.NewRequest(http.MethodGet, url, nil)
+			require.NoError(t, err)
+
+			//tc.setupAuth(t, request, server.tokenMaker)
+			server.router.ServeHTTP(recorder, request)
+			tc.checkResponse(t, recorder)
+		})
+	}
+}
+
+func randomAccount() db.Account {
+	return db.Account{
+		ID: util.RandomInt(1, 1000),
+		//Owner:    owner,
+		Balance:  util.RandomMoney(),
+		Currency: util.RandomCurrency(),
+	}
+}
+
+func requireBodyMatchAccount(t *testing.T, body *bytes.Buffer, account db.Account) {
+	data, err := io.ReadAll(body)
+	require.NoError(t, err)
+
+	var gotAccount db.Account
+	err = json.Unmarshal(data, &gotAccount)
+	require.NoError(t, err)
+	require.Equal(t, account, gotAccount)
+}
+
+~~~
+
+**在这段代码中有不懂的地方**
+
+~~~go
+store := mockdb.NewMockStore(ctrl)
+			tc.buildStubs(store)
+
+			server, _ := NewServer(config, store)
+
+store是 *mockdb.MockStore类型
+而func NewServer(config util.Config, store db.Store) (*Server, error) 需要的是db.store类型
+server, _ := NewServer(config, store)
+//我觉得这是自相矛盾
+~~~
+
+**切片**
+
+~~~go
+testCases := []struct {
+		name      string
+		accountID int64
+		//setupAuth     func(t *testing.T, request *http.Request, tokenMaker token.Maker)
+		buildStubs    func(store *mockdb.MockStore)
+		checkResponse func(t *testing.T, recoder *httptest.ResponseRecorder)
+	}{
+		{
+			name:      "OK",
+			accountID: account.ID,
+			// setupAuth: func(t *testing.T, request *http.Request, tokenMaker token.Maker) {
+			// 	addAuthorization(t, request, tokenMaker, authorizationTypeBearer, user.Username, user.Role, time.Minute)
+			// },
+			buildStubs: func(store *mockdb.MockStore) {
+				store.EXPECT().
+					GetAccount(gomock.Any(), gomock.Eq(account.ID)).
+					Times(1).
+					Return(account, nil)
+			},
+			checkResponse: func(t *testing.T, recorder *httptest.ResponseRecorder) {
+				require.Equal(t, http.StatusOK, recorder.Code)
+				requireBodyMatchAccount(t, recorder.Body, account)
+			},
+		},
+		{
+			name:      "NotFound",
+			accountID: account.ID,
+			buildStubs: func(store *mockdb.MockStore) {
+				store.EXPECT().
+					GetAccount(gomock.Any(), gomock.Eq(account.ID)).
+					Times(1).
+					Return(db.Account{}, sql.ErrNoRows)
+			},
+			checkResponse: func(t *testing.T, recorder *httptest.ResponseRecorder) {
+				require.Equal(t, http.StatusNotFound, recorder.Code)
+
+			},
+		},
+	}
+~~~
+
+
+
+----
+
+目前的问题是notfound处理不符合预期
+
+~~~go
+{
+			name:      "NotFound",
+			accountID: account.ID,
+			setupAuth: func(t *testing.T, request *http.Request, tokenMaker token.Maker) {
+				addAuthorization(t, request, tokenMaker, authorizationTypeBearer, user.Username, user.Role, time.Minute)
+			},
+
+			buildStubs: func(store *mockdb.MockStore) {
+				store.EXPECT().
+					GetAccount(gomock.Any(), gomock.Eq(account.ID)).
+					Times(1).
+					Return(db.Account{}, db.ErrRecordNotFound)
+			},
+			checkResponse: func(t *testing.T, recorder *httptest.ResponseRecorder) {
+				require.Equal(t, http.StatusNotFound, recorder.Code)//我手动把 recorder.Code换成404jiu'cheng'gogn
+			},
+		},
+~~~
+
+
+
+----
+
+#### 4.transfer.go
+
+
+
+Currency      string `json:"currency" binding:"required,currency"` 添加了currency验证器 因为正常json不能识别USD等货币
+
+实现思路 在go run mian.go后使用gin框架请求路由前 使用自己添加的数字验证器
+
+在server.go中添加如下内容
+
+~~~go
+
+// 自定义验证函数，检查 currency 是否为 "USD"
+func validCurrency(fl validator.FieldLevel) bool {
+	currency := fl.Field().String()
+	return currency == "USD"
+}
+
+// 注册自定义验证器
+func (server *Server) setupValidator() {
+	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {
+		v.RegisterValidation("currency", validCurrency)
+	}
+}
+
+func NewServer(config util.Config, store db.Store) (*Server, error) {
+	server := &Server{
+		config: config,
+		store:  store,
+	}
+
+	// 注册自定义验证器
+	server.setupValidator()
+	router := gin.Default()
+
+	router.POST("/accounts", server.createAccount)
+	router.GET("/accounts/:id", server.getAccount)
+	router.GET("/accounts", server.listAccount)
+
+	router.POST("transfers", server.createTransfer)
+	server.router = router
+	return server, nil
+}
+
+func errorResponse(err error) gin.H {
+	return gin.H{"error": err.Error()}
+}
+
+func (server *Server) Start(address string) error {
+	return server.router.Run(address)
+}
+
+~~~
+
+
+
+
+
+~~~go
+package api
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	db "project/simplebank/db/sqlc"
+
+	"github.com/gin-gonic/gin"
+)
+
+type transferRequest struct {
+	FromAccountID int64  `json:"from_account" binding:"required,min=1"`
+	ToAccountID   int64  `json:"to_account" binding:"required,min=1"`
+	Amount        int64  `json:"amount" binding:"required,gt=0"`
+	Currency      string `json:"currency" binding:"required,currency"`
+}
+
+func (server *Server) createTransfer(ctx *gin.Context) {
+
+	var req transferRequest
+
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, errorResponse(err))
+		return
+	}
+
+	// 获取并处理 FromAccount
+	fromAccount, valid := server.validAccount(ctx, req.FromAccountID, req.Currency)
+	if !valid {
+		return
+	}
+
+	// 获取并处理 ToAccount
+	toAccount, valid := server.validAccount(ctx, req.ToAccountID, req.Currency)
+	if !valid {
+		return
+	}
+
+	arg := db.TransferTxParams{
+		FromAccountID: fromAccount.ID,
+		ToAccountID:   toAccount.ID,
+		Amount:        req.Amount,
+	}
+	result, err := server.store.TransferTx(ctx, arg)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, errorResponse(err))
+		return
+	}
+
+	ctx.JSON(http.StatusOK, result)
+}
+
+// 检查id和货币
+func (server *Server) validAccount(ctx *gin.Context, accountID int64, currency string) (db.Account, bool) {
+	account, err := server.store.GetAccount(ctx, accountID)
+	if err != nil {
+		if errors.Is(err, db.ErrRecordNotFound) {
+			ctx.JSON(http.StatusNotFound, errorResponse(err))
+			return account, false
+		}
+
+		ctx.JSON(http.StatusInternalServerError, errorResponse(err))
+		return account, false
+	}
+
+	if account.Currency != currency {
+		err := fmt.Errorf("account [%d] currency mismatch: %s vs %s", account.ID, account.Currency, currency)
+		ctx.JSON(http.StatusBadRequest, errorResponse(err))
+		return account, false
+	}
+
+	return account, true
+}
+
+~~~
+
+
+
+用postman测试得到的内容
+
+~~~json
+{
+    "transfer": {
+        "id": 35,
+        "from_account_id": 3,
+        "to_account_id": 5,
+        "amount": 12,
+        "created_at": "2024-10-20T04:53:01.433988Z"
+    },
+    "from_account": {
+        "id": 3,
+        "owner": "afmxtl",
+        "balance": 103,
+        "currency": "USD",
+        "created_at": "2024-10-13T13:33:43.423875Z"
+    },
+    "to_account": {
+        "id": 5,
+        "owner": "bdupue",
+        "balance": 119,
+        "currency": "USD",
+        "created_at": "2024-10-13T13:37:04.113466Z"
+    },
+    "from_entry": {
+        "id": 45,
+        "account_id": 3,
+        "amount": -12,
+        "created_at": "2024-10-20T04:53:01.433988Z"
+    },
+    "to_entry": {
+        "id": 46,
+        "account_id": 5,
+        "amount": 12,
+        "created_at": "2024-10-20T04:53:01.433988Z"
+    }
+}
+~~~
+
+### 十六.用户身份验证和授权
+
+#### 1.建user数据库表
+
+
+
+~~~sql
+// Use DBML to define your database structure
+// Docs: https://dbml.dbdiagram.io/docs
+Table user as U{
+  username carchar [pk]
+  hashed_paassword varchar [not null]
+  full_name varchar [not null]
+  email varchar [unique, not null]
+  password_changed_at timestamp [not null, default: `0001-01-01 00:00:00Z`]
+  create_at timestamptz [not null,default: `now()`]
+}
+
+Table accounts as A {
+  id bigser [pk]
+  owner varchar [ref:> U.username,not null]
+  balance bigint [not null]
+  currency varchar  [not null]
+  created_at timestamp [not null,default: `now()`] 
+
+  Indexes {
+    (owner, currency) [unique]
+  }
+}
+
+Table entries {
+  id bigint [pk]
+  account_id bigint [ref : > A.id,not null] 
+  
+  amount bigint [not null]
+  created_at timestamp [not null,default: `now()`]
+  
+Indexes {
+  account_id
+}
+}
+
+Table transfers {
+  id bigint [pk]
+  from_account_id bigint [ref : > A.id,not null]
+  to_account_id bigint [ref : > A.id,not null]
+  amount  bigint [not null]
+  created_at timestamp [not null,default: `now()`]
+
+  
+Indexes {
+  from_account_id
+  to_account_id
+  (from_account_id,to_account_id)
+}
+}
+~~~
+
+新建数据库迁移：
+
+~~~shell
+migrate create -ext sql -dir db/migration -seq add_users
+~~~
+
+出现了错误
+
+~~~sql
+make migrateup
+migrate -path simplebank/db/migration -database "postgresql://root:secret@localhost:5432/simple_bank?sslmode=disable" -verbose up
+2024/10/20 15:11:16 Start buffering 2/u add_users
+2024/10/20 15:11:16 Read and execute 2/u add_users
+2024/10/20 15:11:16 error: migration failed: syntax error at or near "00" (column 69) in line 6: CREATE TABLE "user" (
+  "username" carchar PRIMARY KEY,
+  "hashed_paassword" varchar NOT NULL,
+  "full_name" varchar NOT NULL,
+  "email" varchar UNIQUE NOT NULL,
+  "password_changed_at" timestamp NOT NULL DEFAULT (0001-01-01 00:00:00Z),
+  "create_at" timestamptz NOT NULL DEFAULT (now())
+);
+
+
+ALTER TABLE "accounts" ADD FOREIGN KEY ("owner") REFERENCES "user" ("username");
+
+--CREATE UNIQUE INDEX ON "accounts" ("owner", "currency");
+ALTER TABLE "acounts" ADD CONSTRAINT "owner_currency-unique" UNIQUE ("owner", "currency") (details: pq: syntax error at or near "00")
+make: *** [migrateup] 错误 1
+~~~
+
+原因：违反了外键约束
+
+### 十七.迁移失败原因
+
+**sql语句写错了 IF写成ID**
+
+**理解去除外键等 **
+
+#### 2.问题：
+
+在执行数据库迁移时，出现的错误是因为在 `accounts` 表上有外键依赖 (`transfers` 表中的 `transfers_from_account_id_fkey` 和 `transfers_to_account_id_fkey` 约束依赖于 `accounts` 表)。当你尝试删除 `accounts` 表时，PostgreSQL 不允许删除这个表，因为还有其他表（如 `transfers`）依赖它。
+
+但是执行了migrateup指令就会出现脏读现象 使得数据库版本变为2 所以我们要先回退到1版本
+
+~~~sql
+make migratedown
+migrate -path simplebank/db/migration -database "postgresql://root:secret@localhost:5432/simple_bank?sslmode=disable" -verbose down
+2024/10/20 15:15:34 Are you sure you want to apply all down migrations? [y/N]
+y
+2024/10/20 15:15:36 Applying all down migrations
+2024/10/20 15:15:36 error: Dirty database version 2. Fix and force version.
+make: *** [migratedown] 错误 1
+~~~
+
+修改迁移表的值为 FALSE：没管用
+
+~~~sql
+执行migratedown操作时失败，并出现错误信息 “cannot drop table accounts because other objects depend on it”，这表明accounts表有其他数据库对象依赖于它。
+原因包括：
+transfers表中的外键约束引用了accounts表。
+直接删除含外键的表会引发错误。
+建议：
+修改迁移脚本，先删除依赖的对象，如约束、触发器、视图等。
+使用CASCADE选项强制删除所有依赖的对象。
+在 makefile 中为migrate命令添加条件检查。
+可能的迁移修正示例：
+DROP TABLE IF EXISTS transfers CASCADE;
+DROP TABLE IF EXISTS accounts;
+~~~
+
+#### 3.解除外键约束
+
+~~~sql
+解决方案：
+你可以按以下步骤修改你的迁移文件，确保先删除外键约束，再删除相关的表。
+
+删除外键约束： 在迁移文件中，先删除 transfers 表中的外键约束：
+ALTER TABLE transfers DROP CONSTRAINT IF EXISTS transfers_from_account_id_fkey;
+ALTER TABLE transfers DROP CONSTRAINT IF EXISTS transfers_to_account_id_fkey;
+
+删除表： 然后，按顺序删除表：
+DROP TABLE IF EXISTS transfers;
+DROP TABLE IF EXISTS entries;
+DROP TABLE IF EXISTS accounts;
+~~~
+
+migrate 出现的错误可能就是   把外键依赖删除然后在执行数据库迁移语句
+
+---
+
+有没有可能你在写数据库迁移的时候就没有在migratedown中加入 删除外键约束的语句呢从而导致这么麻烦？？？
+
+---
+
+
+
+编写migratedown时操作是和migrateup相反的
+
+~~~
+~~~
+
+
+
+#### 4.问题：
+
+~~~sql
+make migratedown1
+migrate -path simplebank/db/migration -database "postgresql://root:secret@localhost:5432/simple_bank?sslmode=disable" -verbose down 1
+2024/10/20 17:22:21 error: Dirty database version 1. Fix and force version.
+make: *** [migratedown1] 错误 1
+~~~
+
+这个错误信息表明数据库处于 "dirty" 状态，通常意味着上一次的迁移未成功完成，导致数据库的迁移版本与实际执行情况不一致。要解决这个问题，你可以尝试以下步骤：
+
+#### 5.解决：
+
+检查数据库的迁移状态
+
+使用 `migrate` 查看当前的迁移状态，以确认哪个版本是 dirty：
+
+```sql
+migrate -path simplebank/db/migration -database "postgresql://root:secret@localhost:5432/simple_bank?sslmode=disable" version
+```
+
+这将显示当前数据库的版本号以及 dirty 状态。
+
+ 强制迁移版本
+
+使用 `migrate force` 命令将数据库状态恢复为干净的版本。你可以将其设置为版本 1，这样可以清除 "dirty" 标志，同时保留当前的版本号。
+
+执行以下命令：
+
+```sql
+migrate -path simplebank/db/migration -database "postgresql://root:secret@localhost:5432/simple_bank?sslmode=disable" force 1
+```
+
+这个命令不会运行任何迁移，它只是将数据库的迁移版本重置为 1，同时将脏状态清除。
+
+
+
+####  6.检查当前数据库中的约束名
+
+如果不确定数据库中的约束名，可以通过以下 SQL 查询当前表中的约束名称：
+
+```sql
+SELECT conname FROM pg_constraint WHERE conrelid = 'accounts'::regclass;
+```
+
+每条语句后面要写分号啊啊啊啊！！！！！
+
+### 十八. user_test.go
+
+~~~go
+package db
+
+import (
+	"context"
+	util "project/simplebank/util"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+func createRandomUser(t *testing.T) User {
+
+	arg := CreateUserParams{
+		Username:       util.RandomOwner(),
+		HashedPassword: "secret",
+		FullName:       util.RandomOwner(),
+		Email:          util.RandomEmail(),
+	}
+
+	user, err := testStore.CreateUser(context.Background(), arg)
+	require.NoError(t, err)
+	require.NotEmpty(t, user)
+
+	require.Equal(t, arg.Username, user.Username)
+	require.Equal(t, arg.HashedPassword, user.HashedPassword)
+	require.Equal(t, arg.FullName, user.FullName)
+	require.Equal(t, arg.Email, user.Email)
+
+	require.NotZero(t, user.CreateAt)
+
+	return user
+}
+
+func TestCreateUser(t *testing.T) {
+	createRandomUser(t)
+}
+
+func TestGetUser(t *testing.T) {
+	user1 := createRandomUser(t)
+	user2, err := testStore.GetUser(context.Background(), user1.Username)
+	require.NoError(t, err)
+	require.NotEmpty(t, user2)
+
+	require.Equal(t, user1.Username, user2.Username)
+	require.Equal(t, user1.HashedPassword, user2.HashedPassword)
+	require.Equal(t, user1.FullName, user2.FullName)
+	require.Equal(t, user1.Email, user2.Email)
+	require.WithinDuration(t, user1.PasswordChangedAt.Time, user2.PasswordChangedAt.Time, time.Second)
+	require.WithinDuration(t, user1.CreateAt.Time, user2.CreateAt.Time, time.Second)
+}
+
+~~~
+
+**在第29行代码有一个断言语句判断 ：**
+
+~~~go
+require.True(t, user.PasswordChangedAt.Time.IsZero())
+~~~
+
+这个语句目前不能通过测试 往后看吧看看是么时候找到问题
+
+
+
+#### 1. 10.23外键约束问题
+
+运行真个包测试出现的问题
+
+~~~shell
+这个外键错误提示 "ERROR: insert or update on table"accounts"violates foreign key constraint"accounts_owner_fkey"(SQLSTATE 23503)" 意味着在尝试往 "accounts" 表中插入或更新数据时违反了名为 "accounts_owner_fkey" 的外键约束。
+~~~
+
+
+
+**应该是    一个用户链接到账户 这就是主表与副表的关系  设置外键 将两个表链接到一起**
+
+
+
+#### 2.数据库表出现错误
+
+数据库语句就写错了 正常每个表的 id序列都应该是自增的 如果不是这样将会出现以下错误
+
+~~~shell
+ERROR: null value in column "id" violates not-null constraint (SQLSTATE 23502)
+~~~
+
+我们要重新修改数据库迁移语句
+
+~~~go
+CREATE TABLE "accounts" (
+  "id" bigserial PRIMARY KEY,
+  "owner" varchar NOT NULL,
+  "balance" bigint NOT NULL,
+  "currency" varchar NOT NULL,
+  "created_at" timestamptz NOT NULL DEFAULT (now())
+);
+
+CREATE TABLE "entries" (
+  "id" bigserial PRIMARY KEY,
+  "account_id" bigint NOT NULL,
+  "amount" bigint NOT NULL,
+  "created_at" timestamptz NOT NULL DEFAULT (now())
+);
+
+CREATE TABLE "transfers" (
+  "id" bigserial PRIMARY KEY,
+  "from_account_id" bigint NOT NULL,
+  "to_account_id" bigint NOT NULL,
+  "amount" bigint NOT NULL,
+  "created_at" timestamptz NOT NULL DEFAULT (now())
+);
+
+ALTER TABLE "entries" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" ("id");
+
+ALTER TABLE "transfers" ADD FOREIGN KEY ("from_account_id") REFERENCES "accounts" ("id");
+
+ALTER TABLE "transfers" ADD FOREIGN KEY ("to_account_id") REFERENCES "accounts" ("id");
+
+CREATE INDEX ON "accounts" ("owner");
+
+CREATE INDEX ON "entries" ("account_id");
+
+CREATE INDEX ON "transfers" ("from_account_id");
+
+CREATE INDEX ON "transfers" ("to_account_id");
+
+CREATE INDEX ON "transfers" ("from_account_id", "to_account_id");
+
+COMMENT ON COLUMN "entries"."amount" IS 'can be negative or positive';
+
+COMMENT ON COLUMN "transfers"."amount" IS 'must be positive';
+
+~~~
+
+修改过后 正常运行account_test.go
+
+#### 3.修改状态码
+
+~~~go
+
+	account, err := server.store.CreateAccount(ctx, arg)
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok {
+			switch pqErr.Code.Name() {
+			case "foreign_key_violation", "unique_violation":
+				ctx.JSON(http.StatusForbidden, errorResponse(err))
+				return
+			default:
+				log.Println(pqErr.Code.Name())
+			}
+			ctx.JSON(http.StatusInternalServerError, errorResponse(err))
+			return
+		}
+
+		ctx.JSON(http.StatusOK, account)
+	}
+~~~
+
+出现错误了 等待明天修改
+
+**10.24**
+
+将上述代码语句修改为
+
+~~~go
+if err != nil {
+			errCode := db.ErrorCode(err)
+			if errCode == db.ForeignKeyViolation || errCode == db.UniqueViolation {
+				ctx.JSON(http.StatusForbidden, errorResponse(err))
+				return
+			}
+~~~
+
+成功解决了问题 。 这是为什么呢？？
+
+应该是:
+
+~~~go
+if errCode == db.ForeignKeyViolation || errCode == db.UniqueViolation
+~~~
+
+这段代码起到了主要i作用
+
+在error.go中
+
+~~~
+const (
+	ForeignKeyViolation = "23503"
+	UniqueViolation     = "23505"
+)
+~~~
+
+这代表了：
+
+~~~
+ForeignKeyViolation 常量的值是 "23503"，它代表 PostgreSQL 中的一个错误代码。当执行的数据库操作违反外键约束时，会触发这个错误。外键约束保证了不同表之间的关系，如果尝试插入、更新或删除的数据并不能被其他表中的相关记录引用，就会抛出这个错误。
+
+UniqueViolation 常量的值是 "23505"，这也是一个 PostgreSQL 错误代码。当向需要唯一值的字段插入了重复的值时，会引发这个错误。违反唯一性约束意味着这样的操作将导致两个记录含有相同的值，这在数据库规则中通常是不允许的，因为唯一约束保护了记录唯一识别数据的能力。
+~~~
+
+
+
+### 十九.在数据库中安全的存储密码
+
+#### 1.password.go
+
+~~~go
+package util
+
+import (
+	"fmt"
+
+	"golang.org/x/crypto/bcrypt"
+)
+
+func HashPassword(password string) (string, error) {
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", fmt.Errorf("哈希加密失败:%w", err)
+	}
+	return string(hashedPassword), nil
+
+}
+
+// checkPassword
+func CheckPassword(password string, hashedPassword string) error {
+	return bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
+
+}
+
+~~~
+
+
+
+#### 2.password_test.go
+
+~~~go
+package util
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
+)
+
+func TestPassword(t *testing.T) {
+	password := RandomString(6)
+
+	hashPassword, err := HashPassword(password)
+	require.NoError(t, err)
+	err = CheckPassword(password, hashPassword)
+	require.NoError(t, err)
+
+	wrongPassword := RandomString(6)
+	err = CheckPassword(wrongPassword, hashPassword)
+	require.EqualError(t, err, bcrypt.ErrMismatchedHashAndPassword.Error())
+
+}
+
+~~~
+
+
+
+#### 3.user.go
+
+~~~go
+package api
+
+import (
+	"net/http"
+
+	db "project/simplebank/db/sqlc"
+	util "project/simplebank/util"
+
+	"github.com/gin-gonic/gin"
+)
+
+type CreateUserRequest struct {
+	Username string `json:"username" binding:"required,alphanum"`
+	FullName string `json:"fullname" binding:"required"`
+	Email    string `json:"email" binding:"required,email"`
+	Password string `json:"password" binding:"required,min=6"`
+}
+
+func (server *Server) createUser(ctx *gin.Context) {
+	var req CreateUserRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, errorResponse(err))
+		return
+	}
+
+	hashedPassword, err := util.HashedPassword(req.Password)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, errorResponse(err))
+		return
+
+	}
+	arg := db.CreateUserParams{
+		Username:       req.Username,
+		FullName:       req.FullName,
+		Email:          req.Email,
+		HashedPassword: hashedPassword,
+	}
+	account, err := server.store.CreateUser(ctx, arg)
+	if err != nil {
+
+		errCode := db.ErrorCode(err)
+		//此处只保留一个外键约束
+		if errCode == db.UniqueViolation {
+			ctx.JSON(http.StatusForbidden, errorResponse(err))
+			return
+		}
+		ctx.JSON(http.StatusInternalServerError, errorResponse(err))
+		return
+	}
+	ctx.JSON(http.StatusOK, account)
+}
+
+~~~
+
+返回结果
+
+~~~json
+{
+    "username": "ZhongHe",
+    "hashed_password": "$2a$10$RRGhHuYmPf9tRVPDckNI5.q6VJ1TzG9aFJ12edZglg7kp97vGwtKO",
+    "full_name": "ZhongHe Zhao",
+    "email": "zhaozhonghe40@gmail.com",
+    "password_changed_at": "2024-10-24T07:14:46.169687Z",
+    "create_at": "2024-10-24T07:14:46.169687Z"
+}
+~~~
+
+
+
+想让返回结果没有 这个字段
+
+~~~json
+ "hashed_password": "$2a$10$RRGhHuYmPf9tRVPDckNI5.q6VJ1TzG9aFJ12edZglg7kp97vGwtKO",
+~~~
+
+添加
+
+~~~go
+
+type CreateUserResponse struct {
+	Username          string    `json:"username"`
+	FullName          string    `json:"full_name"`
+	Email             string    `json:"email"`
+	PasswordChangedAt time.Time `json:"password_changed_at"`
+	CreateAt          time.Time `json:"create_at"`
+}
+
+~~~
+
+
+
+
+
+~~~go
+rsp := CreateUserResponse{
+		Username:          user.Username,
+		FullName:          user.FullName,
+		Email:             user.Email,
+		PasswordChangedAt: user.PasswordChangedAt.Time,
+		CreateAt:          user.CreateAt.Time,
+	}
+
+	ctx.JSON(http.StatusOK, rsp)
+~~~
+
+
+
+### 二十.user_test.go
+
+~~~go
+package api
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"testing"
+
+	mockdb "project/simplebank/db/mock"
+	db "project/simplebank/db/sqlc"
+	"project/simplebank/util"
+
+	"github.com/gin-gonic/gin"
+	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/require"
+)
+
+type eqCreateUserParamsMatcher struct {
+	arg      db.CreateUserParams
+	password string
+}
+
+func (e eqCreateUserParamsMatcher) Matches(x interface{}) bool {
+	arg, ok := x.(db.CreateUserParams)
+	if !ok {
+		return false
+	}
+
+	err := util.CheckPassword(e.password, arg.HashedPassword)
+	if err != nil {
+		return false
+	}
+
+	e.arg.HashedPassword = arg.HashedPassword
+	return reflect.DeepEqual(e.arg, arg)
+}
+
+func (e eqCreateUserParamsMatcher) String() string {
+	return fmt.Sprintf("matches arg %v and password %v", e.arg, e.password)
+}
+
+func EqCreateUserParams(arg db.CreateUserParams, password string) gomock.Matcher {
+	return eqCreateUserParamsMatcher{arg, password}
+}
+
+func TestCreateUserAPI(t *testing.T) {
+	user, password := randomUser(t)
+
+	testCases := []struct {
+		name          string
+		body          gin.H
+		buildStubs    func(store *mockdb.MockStore)
+		checkResponse func(recoder *httptest.ResponseRecorder)
+	}{
+		{
+			name: "OK",
+			body: gin.H{
+				"username":  user.Username,
+				"password":  password,
+				"full_name": user.FullName,
+				"email":     user.Email,
+			},
+			buildStubs: func(store *mockdb.MockStore) {
+				arg := db.CreateUserParams{
+					Username:       user.Username,
+					FullName:       user.FullName,
+					Email:          user.Email,
+					HashedPassword: user.HashedPassword,
+				}
+				store.EXPECT().
+					CreateUser(gomock.Any(), EqCreateUserParams(arg, password)).
+					Times(1).
+					Return(user, nil)
+			},
+			checkResponse: func(recorder *httptest.ResponseRecorder) {
+				fmt.Printf("Response code: %d\n", recorder.Code)
+				require.Equal(t, http.StatusOK, recorder.Code)
+				requireBodyMatchUser(t, recorder.Body, user)
+			},
+		},
+	}
+
+	for i := range testCases {
+		tc := testCases[i]
+
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			store := mockdb.NewMockStore(ctrl)
+			tc.buildStubs(store)
+
+			server := newTestServer(t, store)
+			recorder := httptest.NewRecorder()
+
+			// Marshal body data to JSON
+			data, err := json.Marshal(tc.body)
+			require.NoError(t, err)
+			fmt.Printf("Request body: %s\n", string(data)) // 打印请求体
+			url := "/users"
+			request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
+			require.NoError(t, err)
+
+			server.router.ServeHTTP(recorder, request)
+			tc.checkResponse(recorder)
+			fmt.Printf("Request body: %v\n", tc.body)
+		})
+	}
+}
+
+func randomUser(t *testing.T) (user db.User, password string) {
+	password = util.RandomString(6)
+	hashedPassword, err := util.HashedPassword(password)
+	require.NoError(t, err)
+
+	user = db.User{
+		Username:       util.RandomOwner(),
+		HashedPassword: hashedPassword,
+		FullName:       util.RandomOwner(),
+		Email:          util.RandomEmail(),
+	}
+	return
+}
+
+func requireBodyMatchUser(t *testing.T, body *bytes.Buffer, user db.User) {
+	data, err := io.ReadAll(body)
+	require.NoError(t, err)
+
+	var gotUser db.User
+	err = json.Unmarshal(data, &gotUser)
+
+	require.NoError(t, err)
+	require.Equal(t, user.Username, gotUser.Username)
+	require.Equal(t, user.FullName, gotUser.FullName)
+	require.Equal(t, user.Email, gotUser.Email)
+	require.Empty(t, gotUser.HashedPassword)
+}
+~~~
+
+
+
+
+
+
+
+gomock.Any()这个验证的 准确度太低 任何测试基本都能通过
+
+解决方法 使用 新的自定义匹配器
+
+~~~go
+ 
+type eqCreateUserParamsMatcher struct {
+	arg      db.CreateUserParams
+	password string
+}
+
+func (e eqCreateUserParamsMatcher) Matches(x interface{}) bool {
+	arg, ok := x.(db.CreateUserParams)
+	if !ok {
+		return false
+	}
+
+	err := util.CheckPassword(e.password, arg.HashedPassword)
+	if err != nil {
+		return false
+	}
+
+	e.arg.HashedPassword = arg.HashedPassword
+	return reflect.DeepEqual(e.arg, arg)
+}
+
+func (e eqCreateUserParamsMatcher) String() string {
+	return fmt.Sprintf("matches arg %v and password %v", e.arg, e.password)
+}
+
+func EqCreateUserParams(arg db.CreateUserParams, password string) gomock.Matcher {
+	return eqCreateUserParamsMatcher{arg, password}
+}
+
+~~~
+
+
+
+
+
+
+
+#### 1.问题
+
+**长记性 json的字段名错误 我测试了一下午**
+
+~~~go
+
+type CreateUserRequest struct {
+	Username string `json:"username" binding:"required,alphanum"`
+	FullName string `json:"full_name" binding:"required"`
+	Email    string `json:"email" binding:"required,email"`
+	Password string `json:"password" binding:"required,min=6"`
+}
+~~~
+
+FullName string `json:"full_name" binding:"required"`这里的json标签我把full_name 写成了fullname
+
+
+
+### 二十一.JWT
+
+#### 1.JSON Web令牌
+
+密钥算法
+
+服务器一般使用RSA 和 RS256来验证令牌
+
+对称算法
+
+非对称算法
+
+必须在服务器代码中 检查令牌的算法标头
+
+
+
+JWT令牌的很多问题：
+
+![image-20241026184159996](C:\Users\30413\AppData\Roaming\Typora\typora-user-images\image-20241026184159996.png)
+
+
+
+RASETO作为替代JWT的安全方案 
+
+![image-20241026184634250](C:\Users\30413\AppData\Roaming\Typora\typora-user-images\image-20241026184634250.png)
+
+
+
+#### 2.基于令牌的身份验证的工作原理是什么？
+
+基于令牌的身份验证从用户登录至系统、设备或应用程序开始，通常使用密码或安全问题。授权服务器验证初始身份验证，然后发放访问令牌，访问令牌是一小段数据，允许客户端应用程序向 API 服务器发出安全调用或信号。
+
+基于令牌的身份验证的工作原理是为服务器提供第二种高度可靠的方式来验证用户的身份和请求的真实性。
+
+完成该基于令牌的初始身份验证协议后，令牌就像盖了章的票据一样：用户可以在令牌生命周期内连续无缝访问相关资源，而无需重新进行身份验证。 该生命周期在用户注销或退出应用程序时结束，也可由设定的超时协议触发。
+
+
+
+#### 3.基于令牌的身份验证有何益处？
+
+基于令牌的身份验证能为多个利益相关者提供许多便利：
+
+- **即时的用户体验**：用户无需在每次返回系统、应用程序或网页时重新输入凭据并重新进行身份验证，只要令牌仍然有效（通常会持续到会话因注销或退出而结束），用户就可以保持即时访问。
+- **增加了数字安全性**：基于令牌的身份验证在传统的基于密码或基于服务器的身份验证之上又增加了一道安全保护。通常，令牌比密码更难被窃取、被黑客入侵或以其他方式泄露。
+- **管理员控制**：基于令牌的身份验证为管理员提供了对每个用户操作和事项的更精细的控制和可见性。
+- **减轻技术负担**：由于令牌生成可以与令牌验证完全分离，因此验证可以由辅助服务（如 Entrust 身份和访问管理解决方案提供的服务）来处理。这将显著减少内部服务器和设备上的负载。
+
+
+
+### 二十二.编写令牌
+
+
+
+#### make.go
+
+~~~go
+package token
+
+import (
+	"time"
+)
+
+// Maker is an interface for managing tokens
+type Maker interface {
+	// CreateToken creates a new token for a specific username and duration
+	CreateToken(username string, role string, duration time.Duration) (string, *Payload, error)
+
+	// VerifyToken checks if the token is valid or not
+	VerifyToken(token string) (*Payload, error)
+}
+
+~~~
+
+
+
+#### payload.go
+
+~~~~go
+package token
+
+import (
+	"errors"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// Different types of error returned by the VerifyToken function
+var (
+	ErrInvalidToken = errors.New("token is invalid")
+	ErrExpiredToken = errors.New("token has expired")
+)
+
+// Payload contains the payload data of the token
+type Payload struct {
+	ID        uuid.UUID `json:"id"`
+	Username  string    `json:"username"`
+	Role      string    `json:"role"`
+	IssuedAt  time.Time `json:"issued_at"`
+	ExpiredAt time.Time `json:"expired_at"`
+}
+
+// NewPayload creates a new token payload with a specific username and duration
+func NewPayload(username string, role string, duration time.Duration) (*Payload, error) {
+	tokenID, err := uuid.NewRandom()
+	if err != nil {
+		return nil, err
+	}
+
+	payload := &Payload{
+		ID:        tokenID,
+		Username:  username,
+		Role:      role,
+		IssuedAt:  time.Now(),
+		ExpiredAt: time.Now().Add(duration),
+	}
+	return payload, nil
+}
+
+// Valid checks if the token payload is valid or not
+func (payload *Payload) Valid() error {
+	if time.Now().After(payload.ExpiredAt) {
+		return ErrExpiredToken
+	}
+	return nil
+}
+
+~~~~
+
+
+
+#### jwt_maker.go
+
+~~~go
+package token
+
+import (
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/dgrijalva/jwt-go"
+)
+
+const minSecretKeySize = 32
+
+// JWTMaker is a JSON Web Token maker
+type JWTMaker struct {
+	secretKey string
+}
+
+// NewJWTMaker creates a new JWTMaker
+func NewJWTMaker(secretKey string) (Maker, error) {
+	if len(secretKey) < minSecretKeySize {
+		return nil, fmt.Errorf("invalid key size: must be at least %d characters", minSecretKeySize)
+	}
+	return &JWTMaker{secretKey}, nil
+}
+
+// CreateToken creates a new token for a specific username and duration
+func (maker *JWTMaker) CreateToken(username string, role string, duration time.Duration) (string, *Payload, error) {
+	payload, err := NewPayload(username, role, duration)
+	if err != nil {
+		return "", payload, err
+	}
+
+	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, payload)
+	token, err := jwtToken.SignedString([]byte(maker.secretKey))
+	return token, payload, err
+}
+
+// VerifyToken checks if the token is valid or not
+func (maker *JWTMaker) VerifyToken(token string) (*Payload, error) {
+	keyFunc := func(token *jwt.Token) (interface{}, error) {
+		_, ok := token.Method.(*jwt.SigningMethodHMAC)
+		if !ok {
+			return nil, ErrInvalidToken
+		}
+		return []byte(maker.secretKey), nil
+	}
+
+	jwtToken, err := jwt.ParseWithClaims(token, &Payload{}, keyFunc)
+	if err != nil {
+		verr, ok := err.(*jwt.ValidationError)
+		if ok && errors.Is(verr.Inner, ErrExpiredToken) {
+			return nil, ErrExpiredToken
+		}
+		return nil, ErrInvalidToken
+	}
+
+	payload, ok := jwtToken.Claims.(*Payload)
+	if !ok {
+		return nil, ErrInvalidToken
+	}
+
+	return payload, nil
+}
+
+~~~
+
+
+
+jwt_test.go
+
+~~~go
+package token
+
+import (
+	"testing"
+	"time"
+
+	"project/simplebank/util"
+
+	"github.com/dgrijalva/jwt-go"
+	"github.com/stretchr/testify/require"
+)
+
+func TestJWTMaker(t *testing.T) {
+	maker, err := NewJWTMaker(util.RandomString(32))
+	require.NoError(t, err)
+
+	username := util.RandomOwner()
+	role := util.DepositorRole
+	duration := time.Minute
+
+	issuedAt := time.Now()
+	expiredAt := issuedAt.Add(duration)
+
+	token, err := maker.CreateToken(username, duration)
+	require.NoError(t, err)
+	require.NotEmpty(t, token)
+
+	payload, err := maker.VerifyToken(token)
+	require.NoError(t, err)
+	require.NotEmpty(t, payload)
+
+	require.NotZero(t, payload.ID)
+	require.Equal(t, username, payload.Username)
+	require.Equal(t, role, payload.Role)
+	require.WithinDuration(t, issuedAt, payload.IssuedAt, time.Second)
+	require.WithinDuration(t, expiredAt, payload.ExpiredAt, time.Second)
+}
+
+func TestExpiredJWTToken(t *testing.T) {
+	maker, err := NewJWTMaker(util.RandomString(32))
+	require.NoError(t, err)
+
+	token, err := maker.CreateToken(util.RandomOwner(), -time.Minute)
+	require.NoError(t, err)
+	require.NotEmpty(t, token)
+
+	payload, err := maker.VerifyToken(token)
+	require.Error(t, err)
+	require.EqualError(t, err, ErrExpiredToken.Error())
+	require.Nil(t, payload)
+}
+
+func TestInvalidJWTTokenAlgNone(t *testing.T) {
+	payload, err := NewPayload(util.RandomOwner(), time.Minute)
+	require.NoError(t, err)
+
+	jwtToken := jwt.NewWithClaims(jwt.SigningMethodNone, payload)
+	token, err := jwtToken.SignedString(jwt.UnsafeAllowNoneSignatureType)
+	require.NoError(t, err)
+
+	maker, err := NewJWTMaker(util.RandomString(32))
+	require.NoError(t, err)
+
+	payload, err = maker.VerifyToken(token)
+	require.Error(t, err)
+	require.EqualError(t, err, ErrInvalidToken.Error())
+	require.Nil(t, payload)
+}
+
+~~~
+
+作者说 passeto是比JWT更简洁更好用
+
+
+
+#### passeto_maker.go
+
+~~~go
+package token
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/aead/chacha20poly1305"
+	"github.com/o1egl/paseto"
+)
+
+// PasetoMaker is a PASETO token maker
+type PasetoMaker struct {
+	paseto       *paseto.V2
+	symmetricKey []byte
+}
+
+// NewPasetoMaker creates a new PasetoMaker
+func NewPasetoMaker(symmetricKey string) (Maker, error) {
+	if len(symmetricKey) != chacha20poly1305.KeySize {
+		return nil, fmt.Errorf("invalid key size: must be exactly %d characters", chacha20poly1305.KeySize)
+	}
+
+	maker := &PasetoMaker{
+		paseto:       paseto.NewV2(),
+		symmetricKey: []byte(symmetricKey),
+	}
+
+	return maker, nil
+}
+
+// CreateToken creates a new token for a specific username and duration
+func (maker *PasetoMaker) CreateToken(username string, duration time.Duration) (string, error) {
+	payload, err := NewPayload(username, duration)
+	if err != nil {
+		return "", err
+	}
+
+	return maker.paseto.Encrypt(maker.symmetricKey, payload, nil)
+
+}
+
+// VerifyToken checks if the token is valid or not
+func (maker *PasetoMaker) VerifyToken(token string) (*Payload, error) {
+	payload := &Payload{}
+
+	err := maker.paseto.Decrypt(token, maker.symmetricKey, payload, nil)
+	if err != nil {
+		return nil, ErrInvalidToken
+	}
+
+	err = payload.Valid()
+	if err != nil {
+		return nil, err
+	}
+
+	return payload, nil
+}
+
+~~~
+
+
+
+#### paseto_make_test.go
+
+~~~go
+package token
+
+import (
+	"testing"
+	"time"
+
+	"project/simplebank/util"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestPasetoMaker(t *testing.T) {
+	maker, err := NewJWTMaker(util.RandomString(32))
+	require.NoError(t, err)
+
+	username := util.RandomOwner()
+	duration := time.Minute
+
+	issuedAt := time.Now()
+	expiredAt := issuedAt.Add(duration)
+
+	token, err := maker.CreateToken(username, duration)
+	require.NoError(t, err)
+	require.NotEmpty(t, token)
+
+	payload, err := maker.VerifyToken(token)
+	require.NoError(t, err)
+	require.NotEmpty(t, payload)
+
+	require.NotZero(t, payload.ID)
+	require.Equal(t, username, payload.Username)
+	require.WithinDuration(t, issuedAt, payload.IssuedAt, time.Second)
+	require.WithinDuration(t, expiredAt, payload.ExpiredAt, time.Second)
+}
+
+func TestExpiredPasetoToken(t *testing.T) {
+	maker, err := NewPasetoMaker(util.RandomString(32))
+	require.NoError(t, err)
+
+	token, err := maker.CreateToken(util.RandomOwner(), -time.Minute)
+	require.NoError(t, err)
+	require.NotEmpty(t, token)
+
+	payload, err := maker.VerifyToken(token)
+	require.Error(t, err)
+	require.EqualError(t, err, ErrExpiredToken.Error())
+	require.Nil(t, payload)
+}
+
+//None算法
+
+~~~
+
+
+
+
+
+### 10.28学习如何用令牌登录api
+
+#### 1.server.go
+
+~~~go
+package api
+
+import (
+	"fmt"
+	db "project/simplebank/db/sqlc"
+	"project/simplebank/token"
+	"project/simplebank/util"
+
+	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
+	"github.com/go-playground/validator/v10"
+)
+
+type Server struct {
+	config     util.Config
+	store      db.Store
+	router     *gin.Engine
+	tokenMaker token.Maker
+}
+
+// 自定义验证函数，检查 currency 是否为 "USD"
+func validCurrency(fl validator.FieldLevel) bool {
+	currency := fl.Field().String()
+	return currency == "RMB"
+}
+
+// 注册自定义验证器
+func (server *Server) setupValidator() {
+	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {
+		v.RegisterValidation("currency", validCurrency)
+	}
+}
+
+func NewServer(config util.Config, store db.Store) (*Server, error) {
+	tokenMaker, err := token.NewPasetoMaker(config.TokenSymmetricKey)
+	if err != nil {
+		fmt.Printf("Key length in bytes: %d\n", len([]byte(config.TokenSymmetricKey)))
+		return nil, fmt.Errorf("cannot create token maker: %w", err)
+	}
+
+	server := &Server{
+		config:     config,
+		store:      store,
+		tokenMaker: tokenMaker,
+	}
+
+	// 注册自定义验证器
+	server.setupValidator()
+	server.setupRouter()
+	return server, nil
+}
+
+func (server *Server) setupRouter() {
+	router := gin.Default()
+
+	router.POST("/users/login", server.loginUser)
+
+	router.POST("transfers", server.createTransfer)
+	router.POST("/accounts", server.createAccount)
+	router.GET("/accounts/:id", server.getAccount)
+	router.POST("/users", server.createUser)
+	router.GET("/accounts", server.listAccounts)
+
+	server.router = router
+
+}
+
+func errorResponse(err error) gin.H {
+	return gin.H{"error": err.Error()}
+}
+
+func (server *Server) Start(address string) error {
+	return server.router.Run(address)
+}
+
+~~~
+
+
+
+
+
+
+
+#### 2.user.go
+
+~~~go
+package api
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"time"
+
+	db "project/simplebank/db/sqlc"
+	util "project/simplebank/util"
+
+	"github.com/gin-gonic/gin"
+	//"github.com/jackc/pgtype"
+)
+
+type CreateUserRequest struct {
+	Username string `json:"username" binding:"required,alphanum"`
+	FullName string `json:"full_name" binding:"required"`
+	Email    string `json:"email" binding:"required,email"`
+	Password string `json:"password" binding:"required,min=6"`
+}
+
+type UserResponse struct {
+	Username          string    `json:"username"`
+	FullName          string    `json:"full_name" binding:"required"`
+	Email             string    `json:"email"`
+	PasswordChangedAt time.Time `json:"password_changed_at"`
+	CreateAt          time.Time `json:"create_at"`
+}
+
+func newUserResponse(user db.User) UserResponse {
+	return UserResponse{
+		Username:          user.Username,
+		FullName:          user.FullName,
+		Email:             user.Email,
+		PasswordChangedAt: user.PasswordChangedAt.Time,
+		CreateAt:          user.CreateAt.Time,
+	}
+
+}
+
+func (server *Server) createUser(ctx *gin.Context) {
+	var req CreateUserRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, errorResponse(err))
+		return
+	}
+	fmt.Printf("Received request: %+v\n", req) // 打印请求体
+
+	hashedPassword, err := util.HashedPassword(req.Password)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, errorResponse(fmt.Errorf("failed to hash password: %v", err)))
+		return
+
+	}
+	arg := db.CreateUserParams{
+		Username:       req.Username,
+		FullName:       req.FullName,
+		Email:          req.Email,
+		HashedPassword: hashedPassword,
+	}
+	user, err := server.store.CreateUser(ctx, arg)
+	if err != nil {
+		fmt.Printf("Error creating user: %v\n", err) // 打印错误
+		errCode := db.ErrorCode(err)
+		//此处只保留一个外键约束
+		if errCode == db.UniqueViolation {
+			return
+		}
+		ctx.JSON(http.StatusForbidden, errorResponse(err))
+		return
+	}
+
+	rsp := newUserResponse(user)
+	ctx.JSON(http.StatusOK, rsp)
+
+}
+
+type loginUserRequest struct {
+	Username string `json:"username" binding:"required,alphanum"`
+	Password string `json:"password" binding:"required,min=6"`
+}
+
+type loginUserResponse struct {
+	AccessToken string       `json:"access_token"`
+	User        UserResponse `json:"user"`
+}
+
+func (server *Server) loginUser(ctx *gin.Context) {
+	var req loginUserRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, errorResponse(err))
+		return
+	}
+
+	user, err := server.store.GetUser(ctx, req.Username)
+	if err != nil {
+		if errors.Is(err, db.ErrRecordNotFound) {
+			ctx.JSON(http.StatusNotFound, errorResponse(err))
+			return
+		}
+		ctx.JSON(http.StatusInternalServerError, errorResponse(err))
+		return
+	}
+
+	err = util.CheckPassword(req.Password, user.HashedPassword)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, errorResponse(err))
+		return
+	}
+
+	accessToken, err := server.tokenMaker.CreateToken(
+		user.Username,
+		server.config.AccessTokenDuration,
+	)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, errorResponse(err))
+		return
+	}
+
+	rsp := loginUserResponse{
+
+		AccessToken: accessToken,
+
+		User: newUserResponse(user),
+	}
+	ctx.JSON(http.StatusOK, rsp)
+
+}
+~~~
+
+
+
+#### 3.问题1
+
+为什么运行transfer_text.go出现了很多错误：
+
+
+
+#### 4.解决1
+
+在学习的时候图方便把作者的代码全部拉了下来  在transfer_test.go中 有很多情况 在transfer中并没有实现 导致无法对应这些情况
+
+正常时作者留给你的任务 让你去课后实现这些功能
+
+
+
+重新回顾第13集：
+
+模拟数据库进行测试：
+
+确保模拟数据库实现与真是数据库相同的接口
+
+出问题的两段代码：
+
+~~~go
+
+
+		 {
+		 	name: "UnauthorizedUser",
+		 	body: gin.H{
+		 		"from_account_id": account1.ID,
+		 		"to_account_id":   account2.ID,
+		 		"amount":          amount,
+				"currency":        util.RandomCurrency(),
+		 	},
+
+		 	buildStubs: func(store *mockdb.MockStore) {
+				store.EXPECT().GetAccount(gomock.Any(), gomock.Eq(account1.ID)).Times(1).Return(account1, nil)
+		 		store.EXPECT().GetAccount(gomock.Any(), gomock.Eq(account2.ID)).Times(0)
+				store.EXPECT().TransferTx(gomock.Any(), gomock.Any()).Times(0)
+		 	},
+			checkResponse: func(recorder *httptest.ResponseRecorder) {
+		 		require.Equal(t, http.StatusUnauthorized, recorder.Code)
+		 	},
+		 },
+		 {
+		 	name: "NoAuthorization",
+		 	body: gin.H{
+		 		"from_account_id": account1.ID,
+		 		"to_account_id":   account2.ID,
+		 		"amount":          amount,
+		 		"currency":        util.USD,
+		 	},
+
+		 	buildStubs: func(store *mockdb.MockStore) {
+		 		store.EXPECT().GetAccount(gomock.Any(), gomock.Any()).Times(0)
+				store.EXPECT().TransferTx(gomock.Any(), gomock.Any()).Times(0)
+			},
+		 	checkResponse: func(recorder *httptest.ResponseRecorder) {
+		 		require.Equal(t, http.StatusUnauthorized, recorder.Code)
+		 	},
+		 },
+~~~
+
+
+
+#### 5.问题2
+
+为什么得到分组用户出错
+
+
+
+#### 6.解决2
+
+
+
+~~~go
+//为什么得到分页的时候用户为空 错误出现在这里
+func (q *Queries) ListAccounts(ctx context.Context, arg ListAccountsParams) ([]Account, error) {
+	rows, err := q.db.Query(ctx, listAccounts, arg.Owner, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Account{}
+	for rows.Next() {
+		var i Account
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.Balance,
+			&i.Currency,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+~~~
+
+rows, err := q.db.Query(ctx, listAccounts, arg.Owner, arg.Limit, arg.Offset) 这里查询的条件有arg.owner 但是我们在测试的时候并没有设置owner 可以显示尝试把owner去掉
+
+
+
+#### 11.6日 二十二.身份验证中间件 授权API请求
+
+
+
+使用make sqlc 和 make mock 重新为listAccount增加 Owner字段
+
+搞了半天 app.env配置错了 应该是
+
+ACCESS_TOKEN_DURATION=15m 
+
+我写成别的了
+
+
+
+### 二十三.部署目前的程序
+
+
+
+#### 1.对程序进行docker化
+
+运用git部署
+
+**注意**：永远不要将更改直接推送到主分支
+
+1.创建新分支-》推送分支-》产生以下结果-》复制url-》创建标题-》创建拉取请求-》从而可以看到 Files changed 文件的更改
+
+~~~shell
+remote: Resolving deltas: 100% (2/2), completed with 2 local objects.
+remote: 
+remote: Create a pull request for 'ft/docker' on GitHub by visiting:
+remote:      https://github.com/Whuichenggong/projects/pull/new/ft/docker
+remote:
+To github.com:Whuichenggong/projects.git
+ * [new branch]      ft/docker -> ft/docker
+~~~
+
+重新回看第10集 配置工作流 最近这两天了解到了工作流有了更深的理解
+
+~~~
+# This workflow will build a golang project
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
+
+name: Go
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.20'
+
+    - name: Build
+      run: go build -v ./...
+
+    - name: Test
+      run: go test -v ./...
+
+~~~
+
+go语言的工作流模板
+
+giuthub action 相当于将一些列配置放到了github上的一个服务器上 也就是相当于将东西放进了github的服务器
+
+---
+
+
+
+#### 11.10日
+
+还是github action问题 终于把 Install golang-migrate解决了 
+
+
+
+因为： 在最开始推送项目到github的时候 就是因为把项目结构推送错了 ，导致推送到github上的项目根目录没有go.mod文件这造成了很大的错误 导致一直失败 
+
+今天又解决了 install golang-migrate问题 因为sudo mv migrate /usr/bin/migrate   把之前的 名称换成 **migrate**就好用了
+
+
+
+问题2：
+
+make migratedown migrate -path /db/migration -database "postgresql://root:secret@localhost:5432/simple_bank?sslmode=disable" -verbose down 2024/11/10 13:30:17 error: open /db/migration\.: The system cannot find the path specified. make: *** [migratedown] 错误 1
+
+在Makefile中的指令的 路径又弄错了 必须让指令能找到位置所在
+
+
+
+**卧槽：成功了 绿了 妈的**
+
+牛逼
+
+
+
+#### Dockerfile
+
+官方镜像
+
+Dockerfile
+
+~~~dockerfile
+# Build stage
+FROM golang:1.16-alpine3.13 
+WORKDIR /app
+COPY . .
+RUN go build -o main main.go
+
+EXPOSE 8080 
+CMD [ "/app/main" ]
+
+~~~
+
+` docker build -t simplebank:latest .` 使用这个指令构建镜像
+
+images的大小很大
+
+~~~shell
+docker images 
+REPOSITORY         TAG          IMAGE ID       CREATED         SIZE
+simplebank         latest       48621dad3f4d   5 minutes ago   656MB
+~~~
+
+分阶段构建可以减少体积
+
+也就是
+
+~~~dockerfile
+# Build stage 构建二进制文件
+FROM golang:1.23-alpine3.20 AS build
+WORKDIR /app
+COPY . .
+RUN go build -o main main.go
+
+# Production stage 生产环境
+FROM alpine:3.20
+WORKDIR /app
+COPY --from=build /app/main .
+
+EXPOSE 8080 
+CMD [ "/app/main" ]
+
+
+~~~
+
+最终体积
+
+~~~
+docker images
+REPOSITORY         TAG          IMAGE ID       CREATED         SIZE
+simplebank         latest       f64691fae70e   7 seconds ago   27.1MB
+~~~
+
+
+
+~~~shell
+docker ps -a列出容器状态
+
+
+docker rmi f64691fae70e
+Untagged: simplebank:latest
+Deleted: sha256:f64691fae70e516b799ed846bbeef10045388dae1932ecafc8b93fb208b403f0
+
+
+//运行这条指令便启动了容器 监听8080端口
+ docker run --name simplebank -p 8080:8080 simplebank:latest
+[GIN-debug] [WARNING] Creating an Engine instance with the Logger and Recovery middleware already attached.
+
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:   export GIN_MODE=release
+ - using code:  gin.SetMode(gin.ReleaseMode)
+
+[GIN-debug] POST   /users                    --> project/simplebank/api.(*Server).createUser-fm (3 handlers)
+[GIN-debug] POST   /users/login              --> project/simplebank/api.(*Server).loginUser-fm (3 handlers)
+[GIN-debug] GET    /accounts/:id             --> project/simplebank/api.(*Server).getAccount-fm (4 handlers)
+[GIN-debug] POST   /accounts                 --> project/simplebank/api.(*Server).createAccount-fm (4 handlers)
+[GIN-debug] GET    /accounts                 --> project/simplebank/api.(*Server).listAccounts-fm (4 handlers)
+[GIN-debug] POST   /transfers                --> project/simplebank/api.(*Server).createTransfer-fm (4 handlers)
+[GIN-debug] [WARNING] You trusted all proxies, this is NOT safe. We recommend you to set a value.
+Please check https://pkg.go.dev/github.com/gin-gonic/gin#readme-don-t-trust-all-proxies for details.
+[GIN-debug] Listening and serving HTTP on 127.0.0.1:1124
+
+
+//重新启动镜像
+PS E:\projects\simplebank> docker rm simplebank
+simplebank
+PS E:\projects\simplebank> docker run --name simplebank -p 8080:8080 -e GIN_MODE=release simplebank:latest
+
+这样启动就不会有上面的输出了
+~~~
+
+ ` docker container inspect postgres12`  检查网络设置
+
+#### 11.13日 
+
+##### 问题：
+
+
+
+
+
+解决用docker启动后 无法用postman测试接口的问题
+
+~~~ shell
+docker run --name simplebank -p 8083:8083 -e GIN_MODE=release -e       DB_SOURCE="postgresql://root:secret@172.17.0.2:5432/simplebank?sslmode=disable" simplebank:latest
+~~~
+
+
+
+**每次修改完dockerfiles或者什么 要记住重新构建镜像**
+
+~~~SHELL
+docker build --no-cache -t simplebank:latest .
+~~~
+
+##### 关键：
+
+**先使用调试功能 查看是否正确监听端口**
+
+~~~shell
+docker run --name simplebank -p 8080:8080  simplebank:latest
+[GIN-debug] [WARNING] Creating an Engine instance with the Logger and Recovery middleware already attached.
+
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:   export GIN_MODE=release
+ - using code:  gin.SetMode(gin.ReleaseMode)
+
+[GIN-debug] POST   /users                    --> project/simplebank/api.(*Server).createUser-fm (3 handlers)
+[GIN-debug] POST   /users/login              --> project/simplebank/api.(*Server).loginUser-fm (3 handlers)
+[GIN-debug] GET    /accounts/:id             --> project/simplebank/api.(*Server).getAccount-fm (4 handlers)
+[GIN-debug] POST   /accounts                 --> project/simplebank/api.(*Server).createAccount-fm (4 handlers)
+[GIN-debug] GET    /accounts                 --> project/simplebank/api.(*Server).listAccounts-fm (4 handlers)
+[GIN-debug] POST   /transfers                --> project/simplebank/api.(*Server).createTransfer-fm (4 handlers)
+[GIN-debug] [WARNING] You trusted all proxies, this is NOT safe. We recommend you to set a value.
+Please check https://pkg.go.dev/github.com/gin-gonic/gin#readme-don-t-trust-all-proxies for details.
+[GIN-debug] Listening and serving HTTP on 0.0.0.0:8080
+~~~
+
+
+
+这次在测试的时候 有了反应
+
+~~~shell
+
+PS E:\projects\simplebank> docker run --name simplebank -p 8080:8080 -e GIN_MODE=release -e DB_SOURCE="postgresql://root:secret@172.17.0.2:5432/simplebank?sslmode=disable" simplebank:latest
+[GIN] 2024/11/13 - 01:17:23 | 401 |      39.567µs |      172.17.0.1 | GET      "/accounts/1"
+~~~
+
+
+
+此更改导致了postgres连接出错
+
+
+
+
+
+
+
+##### **不使用ip地址使用用户定义的网络 连接到postrges**
+
+`docker network ls`
+
+~~~do
+NETWORK ID     NAME                DRIVER    SCOPE
+ca0046b2c82c   bank-network        bridge    local
+cf35f34026f7   bridge              bridge    local
+1500c05159ef   host                host      local
+074a556122c6   none                null      local
+fafb76e1721e   start_gvb-network   bridge    local
+
+~~~
+
+桥接网络
+
+
+
+##### 查看更详细的网络信息
+
+`docker network inspect bridge`docker
+
+
+
+删除网络:
+
+`docker network rm 0fd871187ef1`
+
+##### 创建自己的网络
+
+``docker network create bank_network`
+
+~~~shell
+`0fd871187ef1e3b3bee37ac898e895cf54615e267bd6af9d7b2c045fc5178a14
+~~~
+
+##### 连接创建的网络
+
+ `docker network connect bank-network`
+
+将postrges12 连接到我们创建的网络
+
+`docker network connect bank_network postgres12`
+
+
+
+`docker network inspect bank-network`
+
+
+
+###### 得先启动 postrges12
+
+
+
+**验证 `postgres12` 容器是否正在运行**： 检查 named 的容器是否正在运行：`postgres12`
+
+```
+docker ps -a
+```
+
+查找具有名称的容器并检查其状态。如果容器未运行，请启动容器：`postgres12`
+
+```
+docker start postgres12
+```
+
+**再次将 `postgres12` 连接到网络**： 现在，尝试将容器连接到 ：`postgres12``bank-network`
+
+```
+docker network connect bank-network postgres12
+```
+
+
+
+现在已经成功添加了postrges12
+
+~~~shell
+ "ConfigOnly": false,
+        "Containers": {
+            "7ba14f6dd2f7a81db9264c0814e9686e921b0d86c01b2df325dad4a1cca35c40": {
+                "Name": "postgres12",
+                "EndpointID": "b3dc1614431f2f11f2b0d6c8bb7f33b529baacefa39521bf522c84a7f526a882",
+                "MacAddress": "02:42:ac:12:00:02",
+                "IPv4Address": "172.18.0.2/16",
+                "IPv6Address": ""
+~~~
+
+此时查看
+
+` docker container inspect postgres12`
+
+这个容器将会有两段网络
+
+
+
+~~~shell
+ "NetworkSettings": {
+            "Bridge": "",
+            "SandboxID": "2ea1e674576863a5e20fe6dda2a3ea265dd11b0223dc4a94bbfa23c57adc66d9",
+            "SandboxKey": "/var/run/docker/netns/2ea1e6745768",
+            "Ports": {
+                "5432/tcp": [
+                    {
+                        "HostIp": "0.0.0.0",
+                        "HostPort": "5432"
+                    }
+                ]
+            },
+            "HairpinMode": false,
+            "LinkLocalIPv6Address": "",
+            "LinkLocalIPv6PrefixLen": 0,
+            "SecondaryIPAddresses": null,
+            "SecondaryIPv6Addresses": null,
+            "EndpointID": "d85289ea4f7ca088375523781a14955e1b1fc58e5af731fe7f4c48fecba470e6",
+            "Gateway": "172.17.0.1",
+            "GlobalIPv6Address": "",
+            "GlobalIPv6PrefixLen": 0,
+            "IPAddress": "172.17.0.2",
+            "IPPrefixLen": 16,
+            "IPv6Gateway": "",
+            "MacAddress": "02:42:ac:11:00:02",
+            "Networks": {
+                "bank-network": {
+                    "IPAMConfig": {},
+                    "Links": null,
+                    "Aliases": [
+                        "7ba14f6dd2f7"
+                    ],
+                    "MacAddress": "02:42:ac:12:00:02",
+                    "NetworkID": "ca0046b2c82ccb1fe4c996950a815d9c374c58514921c9b919899d8169cb9881",
+                    "EndpointID": "b3dc1614431f2f11f2b0d6c8bb7f33b529baacefa39521bf522c84a7f526a882",
+                    "Gateway": "172.18.0.1",
+                    "IPAddress": "172.18.0.2",
+                    "IPPrefixLen": 16,
+                    "IPv6Gateway": "",
+                    "GlobalIPv6Address": "",
+                    "GlobalIPv6PrefixLen": 0,
+                    "DriverOpts": {},
+                    "DNSNames": [
+                        "postgres12",
+                        "7ba14f6dd2f7"
+                    ]
+                },
+                "bridge": {
+                    "IPAMConfig": null,
+                    "Links": null,
+                    "Aliases": null,
+                    "MacAddress": "02:42:ac:11:00:02",
+                    "NetworkID": "cf35f34026f787fe91864d7e7a2ab23d482b6a6b956a10d596ae0d9818aa7e16",
+                    "EndpointID": "d85289ea4f7ca088375523781a14955e1b1fc58e5af731fe7f4c48fecba470e6",
+                    "Gateway": "172.17.0.1",
+                    "IPAddress": "172.17.0.2",
+                    "IPPrefixLen": 16,
+                    "IPv6Gateway": "",
+                    "GlobalIPv6Address": "",
+                    "GlobalIPv6PrefixLen": 0,
+                    "DriverOpts": null,
+                    "DNSNames": null
+                }
+            }
+        }
+~~~
+
+
+
+重新使用指令
+
+
+
+` docker run --name simplebank --network bank-network -p 8080:8080 -e GIN_MODE=release -e DB_SOURCE="postgresql://root:secret@172.17.0.2:5432/simplebank?sslmode=disable" simplebank:latest`
+
+此时 simplebank容器将与postgres12运行在同一个网络上
+
+将172.17.0.2替换成postgres12 因为可以通过名称访问网络
+
+
+
+启动容器指令：
+
+~~~
+docker run --name simplebank --network bank-network -p 8080:8080 -e GIN_MODE=release -e DB_SOURCE="postgresql://root:secret@postgres12:5432/simplebank?sslmode=disable" simplebank:latest
+[GIN] 2024/11/13 - 02:06:27 | 400 |     105.754µs |      172.18.0.1 | POST     "/users/login"
+~~~
+
+
+
+`docker network inspect bank-network`
+
+~~~
+ [
+    {
+        "Name": "bank-network",
+        "Id": "ca0046b2c82ccb1fe4c996950a815d9c374c58514921c9b919899d8169cb9881",
+        "Created": "2024-05-10T13:32:42.557489581Z",
+        "Scope": "local",
+        "Driver": "bridge",
+        "EnableIPv6": false,
+        "IPAM": {
+            "Driver": "default",
+            "Options": {},
+            "Config": [
+                {
+                    "Subnet": "172.18.0.0/16",
+                    "Gateway": "172.18.0.1"
+                }
+            ]
+        },
+        "Internal": false,
+        "Attachable": false,
+        "Ingress": false,
+        "ConfigFrom": {
+            "Network": ""
+        },
+        "ConfigOnly": false,
+        "Containers": {
+            "7ba14f6dd2f7a81db9264c0814e9686e921b0d86c01b2df325dad4a1cca35c40": {
+                "Name": "postgres12",
+                "EndpointID": "b3dc1614431f2f11f2b0d6c8bb7f33b529baacefa39521bf522c84a7f526a882",
+                "MacAddress": "02:42:ac:12:00:02",
+                "IPv4Address": "172.18.0.2/16",
+                "IPv6Address": ""
+            },
+            "a76e19ef1c210d1cc4f458ed9b2238db810872417e0a1072e8467dda82663a2a": {
+                "Name": "simplebank",
+                "EndpointID": "487f3ec81ada3bf84e44af700d0ae930075ce8c683755d789c27cadc7f95ed06",
+                "MacAddress": "02:42:ac:12:00:03",
+                "IPv4Address": "172.18.0.3/16",
+                "IPv6Address": ""
+            }
+        },
+        "Options": {},
+        "Labels": {}
+    }
+~~~
+
+目前有两个容器在自定义的网络中运行
+
+**之后的postrges就可以正常使用了**
+
+更改Makefile文件
+
+~~~Makefile
+postgres:
+	docker run --name postgres12 --network bank-network -p 5432:5432 -e POSTGRES_USER=root -e POSTGRES_PASSWORD=secret -d postgres:12-alpine
+~~~
+
+
+
+在github中 pullrequest中可以查看更改 并且 merge 分支到主分支-》然后确认合并—》Delete branch
+
+
+
+
+
+#### 二十四.docker-compose
+
+https://docs.docker.com
+
+
+
+创建docker-compose.yaml文件
+
+~~~
+ version: "3.9"
+services:
+  postgres:
+    image: postgres:12-alpine
+    environment:
+      - POSTGRES_USER=root
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=simple_bank
+    ports:
+      - "5432:5432"
+    
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    
+    environment:
+      - DB_SOURCE=postgresql://root:secret@postgres:5432/simple_bank?sslmode=disable
+     
+~~~
+
+`docker compose up`
+
+~~~shell
+ docker compose up
+[+] Running 1/0
+ ✔ Container simplebank-api-1  Created            0.0s 
+Attaching to api-1, postgres-1
+api-1       | [GIN-debug] [WARNING] Creating an Engine instance with the Logger and Recovery middleware already attached.
+api-1       |
+api-1       | [GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+api-1       |  - using env:     export GIN_MODE=release
+api-1       |  - using code:    gin.SetMode(gin.ReleaseMode)
+api-1       |
+api-1       | [GIN-debug] POST   /users                    --> project/simplebank/api.(*Server).createUser-fm (3 handlers)
+api-1       | [GIN-debug] POST   /users/login              --> project/simplebank/api.(*Server).loginUser-fm (3 handlers)
+api-1       | [GIN-debug] GET    /accounts/:id             --> project/simplebank/api.(*Server).getAccount-fm (4 handlers)
+api-1       | [GIN-debug] POST   /accounts                 --> project/simplebank/api.(*Server).createAccount-fm (4 handlers)
+api-1       | [GIN-debug] GET    /accounts                 --> project/simplebank/api.(*Server).listAccounts-fm (4 handlers)
+api-1       | [GIN-debug] POST   /transfers                --> project/simplebank/api.(*Server).createTransfer-fm (4 handlers)
+api-1       | [GIN-debug] [WARNING] You trusted all proxies, this is NOT safe. We recommend you to set a value.
+api-1       | Please check https://pkg.go.dev/github.com/gin-gonic/gin#readme-don-t-trust-all-proxies for details.
+api-1       | [GIN-debug] Listening and serving HTTP on 0.0.0.0:8080
+postgres-1  | The files belonging to this database system will be owned by user "postgres".
+postgres-1  | This user must also own the server process.
+postgres-1  |
+postgres-1  | The database cluster will be initialized with locale "en_US.utf8".
+postgres-1  | The default database encoding has accordingly been set to "UTF8".
+postgres-1  | The default text search configuration will be set to "english".
+postgres-1  |
+postgres-1  | Data page checksums are disabled.
+postgres-1  |
+postgres-1  | fixing permissions on existing directory /var/lib/postgresql/data ... ok
+postgres-1  | creating subdirectories ... ok
+postgres-1  | selecting dynamic shared memory implementation ... posix
+postgres-1  | selecting default max_connections ... 100
+postgres-1  | selecting default shared_buffers ... 128MB
+postgres-1  | selecting default time zone ... UTC
+postgres-1  | creating configuration files ... ok
+postgres-1  | running bootstrap script ... ok
+postgres-1  | sh: locale: not found
+postgres-1  | 2024-11-13 06:50:42.795 UTC [30] WARNING:  no usable system locales were found
+postgres-1  | performing post-bootstrap initialization ... ok
+postgres-1  | syncing data to disk ... ok
+postgres-1  |
+postgres-1  |
+postgres-1  | Success. You can now start the database server using:
+postgres-1  |
+postgres-1  |     pg_ctl -D /var/lib/postgresql/data -l logfile start
+postgres-1  |
+postgres-1  | initdb: warning: enabling "trust" authentication for local connections
+postgres-1  | You can change this by editing pg_hba.conf or using the option -A, or
+postgres-1  | --auth-local and --auth-host, the next time you run initdb.
+postgres-1  | waiting for server to start....2024-11-13 06:50:43.144 UTC [36] LOG:  starting PostgreSQL 12.18 on x86_64-pc-linux-musl, compiled by gcc (Alpine 13.2.1_git20231014) 13.2.1 20231014, 64-bit
+postgres-1  | 2024-11-13 06:50:43.146 UTC [36] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+postgres-1  | 2024-11-13 06:50:43.160 UTC [37] LOG:  database system was shut down at 2024-11-13 06:50:43 UTC
+postgres-1  | 2024-11-13 06:50:43.164 UTC [36] LOG:  database system is ready to accept connections
+postgres-1  |  done
+postgres-1  | server started
+postgres-1  | CREATE DATABASE
+postgres-1  |
+postgres-1  |
+postgres-1  | /usr/local/bin/docker-entrypoint.sh: ignoring /docker-entrypoint-initdb.d/*
+postgres-1  |
+postgres-1  | waiting for server to shut down....2024-11-13 06:50:43.315 UTC [36] LOG:  received fast shutdown request
+postgres-1  | 2024-11-13 06:50:43.316 UTC [36] LOG:  aborting any active transactions
+postgres-1  | 2024-11-13 06:50:43.318 UTC [36] LOG:  background worker "logical replication launcher" (PID 43) exited with exit code 1
+postgres-1  | 2024-11-13 06:50:43.318 UTC [38] LOG:  shutting down
+postgres-1  | 2024-11-13 06:50:43.330 UTC [36] LOG:  database system is shut down
+postgres-1  |  done
+postgres-1  | server stopped
+postgres-1  |
+postgres-1  | PostgreSQL init process complete; ready for start up.
+postgres-1  |
+postgres-1  | 2024-11-13 06:50:43.447 UTC [1] LOG:  starting PostgreSQL 12.18 on x86_64-pc-linux-musl, compiled by gcc (Alpine 13.2.1_git20231014) 13.2.1 20231014, 64-bit
+
+postgres-1  | 2024-11-13 06:50:43.447 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+postgres-1  | 2024-11-13 06:50:43.447 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+postgres-1  | 2024-11-13 06:50:43.450 UTC [1] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+postgres-1  | 2024-11-13 06:50:43.461 UTC [51] LOG:  database system was shut down at 2024-11-13 06:50:43 UTC
+postgres-1  | 2024-11-13 06:50:43.465 UTC [1] LOG:  database system is ready to accept connections
+~~~
+
+
+
+
+
+构建镜像完成后
+
+~~~shell
+docker images
+REPOSITORY         TAG          IMAGE ID       CREATED        SIZE
+simplebank-api     latest       eb772c9e932f   6 hours ago    27.1MB
+simplebank         latest       9f145f0ce89f   6 hours ago    27.1MB
+~~~
+
+
+
+查看占用端口的进程
+
+
+
+~~~shell
+`netstat -ano | findstr :5432`
+  TCP    0.0.0.0:5432           0.0.0.0:0              LISTENING       30352
+  TCP    [::]:5432              [::]:0                 LISTENING       30352
+  TCP    [::1]:5432             [::]:0                 LISTENING       35464
+PS E:\projects\simplebank> `tasklist /FI "PID eq 30352"``
+
+映像名称                       PID 会话名              会话#       内存使用
+========================= ======== ================ =========== ============
+com.docker.backend.exe       30352 Console                    2    117,104 K
+PS E:\projects\simplebank> `tasklist /FI "PID eq 35464"``
+
+映像名称                       PID 会话名              会话#       内存使用
+========================= ======== ================ =========== ============
+wslrelay.exe                 35464 Console                    2      8,328 K
+~~~
+
+
+
+在 Windows 上（终止进程）：
+
+```shell
+taskkill /PID 30352 /F
+taskkill /PID 35464 /F
+```
+
+
+
+`docker ps`
+
+~~~
+CONTAINER ID   IMAGE                COMMAND                   CREATED             STATUS         PORTS                                      NAMES
+dab18d564f9c   postgres:12-alpine   "docker-entrypoint.s…"   About an hour ago   Up 7 minutes   0.0.0.0:5432->5432/tcp                     simplebank-postgres-1
+c4c37a8a870a   simplebank-api       "/app/main"               About an hour ago   Up 7 minutes   0.0.0.0:8080->8080/tcp                     simplebank-api-1
+~~~
+
+
+
+`docker network inspect simplebank_default`
+
+两个服务容器实际在同一个网络上运行
+
+~~~
+ docker network inspect simplebank_default
+[
+    {
+        "Name": "simplebank_default",
+        "Id": "fab69439b1a55525d81fa70d9e789c3b6d51ba8d7899924deb8413fb724ca951",
+        "Created": "2024-11-13T05:28:49.358856507Z",
+        "Scope": "local",
+        "Driver": "bridge",
+        "EnableIPv6": false,
+        "IPAM": {
+            "Driver": "default",
+            "Options": null,
+            "Config": [
+                {
+                    "Subnet": "172.20.0.0/16",
+                    "Gateway": "172.20.0.1"
+                }
+            ]
+        },
+        "Internal": false,
+        "Attachable": false,
+        "Ingress": false,
+        "ConfigFrom": {
+            "Network": ""
+        },
+        "ConfigOnly": false,
+        "Containers": {
+            "c4c37a8a870a75e9fa626c7034dd935c8f3afdb86c5e2c37b012503bff9c7ab7": {
+                "Name": "simplebank-api-1",
+                "EndpointID": "8a247db55db70983d6b2d619caef09bf2593964daa02be5773448fbd74f9d791",
+                "MacAddress": "02:42:ac:14:00:02",
+                "IPv4Address": "172.20.0.2/16",
+                "IPv6Address": ""
+            },
+            "dab18d564f9c4554ef255e50205be2f4dd9c1fada3391dde698d7717d0e642ff": {
+                "Name": "simplebank-postgres-1",
+                "EndpointID": "2b9220ab1bcc031b29631a2ecb462a48a475a722b10592c478124c03d95e29df",
+                "MacAddress": "02:42:ac:14:00:03",
+                "IPv4Address": "172.20.0.3/16",
+                "IPv6Address": ""
+            }
+        },
+        "Options": {},
+        "Labels": {
+            "com.docker.compose.network": "default",
+            "com.docker.compose.project": "simplebank",
+            "com.docker.compose.version": "2.24.6"
+        }
+    }
+]
+~~~
+
+
+
+`docker compose down` 
+
+删除现在所有网络
+
+
+
+Dockerfile
+
+~~~shell
+# Build stage 构建二进制文件
+FROM golang:1.23-alpine3.20 AS build
+WORKDIR /app
+COPY . .
+RUN go build -o main main.go
+
+# Run stage 
+FROM alpine:3.20
+WORKDIR /app
+COPY --from=build /app/main .
+COPY app.env .
+# 这一步可以解决2024/11/13 08:08:06 cannot load config:Config File "app" Not Found in "[/app]"
+
+EXPOSE 8080 
+CMD [ "/app/main" ]
+
+
+~~~
+
+
+
+---
+
+操 最后一刻验证成功了
+
+用终端输入指令 带入参数 172.17.0.2 这样 viper可以自动读取配置
+
+~~~shell
+docker run --name simplebank -p 8080:8080 -e GIN_MODE=release -e DB_SOURCE="postgresql://root:secret@172.17.0.2:5432/simple_bank?sslmode=disable" simplebank:latest
+Received request: {Username:Zhonghe FullName:zhaohzonghe Email:3041322213@qq.com Password:zzh123456}
+[GIN] 2024/11/13 - 12:54:07 | 200 |   57.106456ms |      172.17.0.1 | POST     "/users"
+
+~~~
+
+app.env中的配置
+
+~~~
+DATABASE_URL=postgres://root:secret@localhost:5432/simple_bank?sslmode=disable
+MIGRATION_URL=project/simplebank/db/migration
+HTTPServerAddress=0.0.0.0:8080
+TOKEN_SYMMETRIC_KEY=12345678901234567890123456789012
+ACCESS_TOKEN_DURATION=15m
+~~~
+
+
+
+---
+
+
+
+
+
+#### 一.11.18日
+
+
+
+`docker ps`
+
+`docker network inspect simplebank_default`
+
+~~~shell
+
+CONTAINER ID   IMAGE                COMMAND                   CREATED              STATUS              PORTS                    NAMES
+81aa7c463a58   postgres:12-alpine   "docker-entrypoint.s…"   About a minute ago   Up About a minute   0.0.0.0:5432->5432/tcp   simplebank-postgres-1
+047f0bb9fbc8   simplebank-api       "/app/main"               About a minute ago   Up About a minute   0.0.0.0:8080->8080/tcp   simplebank-api-1
+PS E:\projects\simplebank> 
+[
+    {
+        "Name": "simplebank_default",
+        "Id": "9afc6c5d5e9252f2161f204008596b067fceecd49ac5a9171910c58f4717e205",
+        "Created": "2024-11-18T11:05:59.526768414Z",
+        "Scope": "local",
+        "Driver": "bridge",
+        "EnableIPv6": false,
+        "IPAM": {
+            "Driver": "default",
+            "Options": null,
+            "Config": [
+                {
+                    "Subnet": "172.18.0.0/16",
+                    "Gateway": "172.18.0.1"
+                }
+            ]
+        },
+        "Internal": false,
+        "Attachable": false,
+        "Ingress": false,
+        "ConfigFrom": {
+            "Network": ""
+        },
+        "ConfigOnly": false,
+        "Containers": {
+            "047f0bb9fbc8fdbe07cc311b134c00ff27cb0a2cbcb4322746a6b30cbbb404bf": {
+                "Name": "simplebank-api-1",
+                "EndpointID": "b607176500386abe6ac7ad27f31d9c453a3f2087dacade426d50a72b1e30b585",
+                "MacAddress": "02:42:ac:12:00:02",
+                "IPv4Address": "172.18.0.2/16",
+                "IPv6Address": ""
+            },
+            "81aa7c463a58ad777dd3d99f9ba3c442c024c02d0f91be924903ffa423f99426": {
+                "Name": "simplebank-postgres-1",
+                "EndpointID": "ce4ec4fda5631c27ba1e8c96503ef86f1bfea3bc8f563ecf7528c75ca91f1bb6",
+                "MacAddress": "02:42:ac:12:00:03",
+                "IPv4Address": "172.18.0.3/16",
+                "IPv6Address": ""
+            }
+        },
+        "Options": {},
+        "Labels": {
+            "com.docker.compose.network": "default",
+            "com.docker.compose.project": "simplebank",
+            "com.docker.compose.version": "2.24.6"
+        }
+    }
+]
+~~~
+
+
+
+两个服务器运行在同一个网络 通过名字彼此发现自己
+
+~~~
+ "Containers": {
+            "047f0bb9fbc8fdbe07cc311b134c00ff27cb0a2cbcb4322746a6b30cbbb404bf": {
+                "Name": "simplebank-api-1",
+                "EndpointID": "b607176500386abe6ac7ad27f31d9c453a3f2087dacade426d50a72b1e30b585",
+                "MacAddress": "02:42:ac:12:00:02",
+                "IPv4Address": "172.18.0.2/16",
+                "IPv6Address": ""
+            },
+            "81aa7c463a58ad777dd3d99f9ba3c442c024c02d0f91be924903ffa423f99426": {
+                "Name": "simplebank-postgres-1",
+                "EndpointID": "ce4ec4fda5631c27ba1e8c96503ef86f1bfea3bc8f563ecf7528c75ca91f1bb6",
+                "MacAddress": "02:42:ac:12:00:03",
+                "IPv4Address": "172.18.0.3/16",
+                "IPv6Address": ""
+            }
+~~~
+
+
+
+目前是链接不上数据库的因为没有执行数据库迁移
+
+重新构建docker-compose docker files文件
+
+
+
+
+
+`docker compose down`
+[+] Running 3/3
+ ✔ Container simplebank-postgres-1  Removed                                                                                                                               0.7s 
+ ✔ Container simplebank-api-1       Removed                                                                                                                               0.6s 
+ ✔ Network simplebank_default       Removed      
+
+删除目前所有容器和网络
+
+
+
+使用`docker rmi ….` 
+
+ 删除simplebank_api镜像
+
+
+
+##### 出错
+
+ERROR [api internal] load metadata for docker.io/library/builder:latest 
+
+错误的核心在于 `tar` 解压的文件名与你 `mv` 命令中期望的文件名不匹配。具体表现为 `tar` 解压生成的文件名并不是 `migrate.linux-amd64`，而是 `migrate`。
+
+
+
+##### 解决方法
+
+**1. 修改 `RUN` 命令中的文件名引用**
+
+根据错误日志，`tar` 解压后生成的文件名是 `migrate`，而非 `migrate.linux-amd64`。因此，`mv` 命令应改为直接操作 `migrate`：
+
+```
+dockerfile RUN curl -L https://github.com/golang-migrate/migrate/releases/download/v4.17.0/migrate.linux-amd64.tar.gz \
+    | tar -xz && mv migrate /app/migrate
+```
+
+这将确保正确地将解压出的 `migrate` 文件移动到 `/app/migrate`。
+
+**2. 验证文件解压和路径**
+
+为了确保过程正确，可以在 `RUN` 指令中加入调试信息以打印文件列表：
+
+```
+dockerfile复制代码RUN curl -L https://github.com/golang-migrate/migrate/releases/download/v4.17.0/migrate.linux-amd64.tar.gz \
+    | tar -xz && ls -l && mv migrate /app/migrate
+```
+
+
+
+原因：要保持 builer同意 我写成了一个build  另一个builder 因该换成build
+
+~~~
+COPY --from=build /app/main .
+COPY --from=build /app/migrate /usr/bin/migrate   
+~~~
+
+
+
+欧克解决了
+
+完整的 dockerfile
+
+~~~docker
+# Build stage
+FROM golang:1.23-alpine3.20 AS build
+WORKDIR /app
+COPY . .
+RUN go build -o main main.go
+RUN apk add curl
+RUN curl -L  https://github.com/golang-migrate/migrate/releases/download/v4.17.0/migrate.linux-amd64.tar.gz | tar xvz && mv migrate /app/migrate
+     
+
+# Run stage
+FROM alpine:3.20
+WORKDIR /app
+COPY --from=build /app/main .
+COPY --from=build /app/migrate /usr/bin/migrate
+COPY app.env .
+COPY start.sh . 
+COPY db/migration ./migration
+
+EXPOSE 8080 
+CMD [ "/app/main" ]
+ENTRYPOINT [ "/app/start.sh" ]
+
+
+~~~
+
+
+
+
+
+完整的 docker-compose.yaml
+
+
+
+~~~docker
+version: "3.9"
+services:
+  postgres:
+    image: postgres:12-alpine
+    environment:
+      - POSTGRES_USER=root
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=simple_bank
+    ports:
+      - "5432:5432"
+    
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    
+    environment:
+      - DB_SOURCE=postgresql://root:secret@postgres:5432/simple_bank?sslmode=disable
+    depends_on:
+      - postgres
+~~~
+
+
+
+下载wait-for工具
+
+`mv "C:\Users\30413\Downloads\wait-for" ./wait-for.sh`
+
+
+
+
+
+目前测试api问题：
+
+~~~
+{
+    "error": "failed to connect to `user=root database=simple_bank`:\n\t127.0.0.1:5432 (localhost): dial error: dial tcp 127.0.0.1:5432: connect: connection refused\n\t[::1]:5432 (localhost): dial error: dial tcp [::1]:5432: connect: cannot assign requested address"
+}
+~~~
+
+
+
+
+
+#### 二.11.22日
+
+##### 解决上次的问题
+
+无论怎么样构建无法用postman接口调试
+
+
+
+这是因为 你在
+
+star.sh中
+
+~~~
+#!/bin/sh
+
+set -e
+
+echo "run db migrations"
+/app/migrate -path /app/migration -database "$DB_SOURCE" -verbose up
+
+echo "start the app"
+exec "$@"
+
+~~~
+
+**解决**
+
+使用的连接数据库的 参数是 $DB_SOURCE" 但是你在app.env中配置的名字不是DB_SOURCE 是DATABASE_URL 这种错误造成的原因可能是目前你并不了解一些列的工具是如何真正使用的没有真正了解
+
+
+
+
+
+之前的配置 都是用DATABASE_URL来配置的
+
+~~~
+DATABASE_URL=postgres://root:secret@localhost:5432/simple_bank?sslmode=disable
+MIGRATION_URL=project/simplebank/db/migration
+HTTPServerAddress=0.0.0.0:8080
+TOKEN_SYMMETRIC_KEY=12345678901234567890123456789012
+ACCESS_TOKEN_DURATION=15m
+~~~
+
+更改为 DB_SOURCE后api测试成功
+
+
+
+#### 三.11.23日
+
+部署应用程序
+
+##### 创建AWS(最大的云提供商)账户部署应用程序
+
+地址 https://aws.amazon.com/free/
+
+emmm不知道银行卡的cvv
+
+
+
+##### 自动构建docker镜像并推送到AWS ECR 
+
+1.创建一个存储库存储docker镜像
+
+将docker 镜像推送到CLI
+每当新代码合并到主分支时 我们将使用 Github Actions自动构建标记和推送镜像
+
+deploy.yml 关键
+
+
+
+**目前没有招商卡无法使用AWS 先使用快过期的aliyun试一试**
+
+添加go到linux环境
+
+~~~
+echo $PATH
+/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/root/bin
+[root@iZt4nbaeq7uzlvq978l1xqZ simplebank]# ^C
+[root@iZt4nbaeq7uzlvq978l1xqZ simplebank]#    export PATH=$PATH:/usr/local/go/bin
+[root@iZt4nbaeq7uzlvq978l1xqZ simplebank]# go run main.go
+go: downloading github.com/jackc/pgx/v5 v5.7.1
+go: downloading github.com/gin-gonic/gin v1.10.0
+
+~~~
+
+
+
+
+
+#### 四.11.29日 尝试
+
+在仅剩5个月的服务器中 把这个简单的项目部署到服务器上
+
+配置服务器的docker的yum源 否则下载东西很费劲
+
+设置国内镜像【不设置可能会导致拉取镜像失败】
+进入/etc/docker文件夹下，修改daemon.json。如果文件不存在则，创建该文件。
+
+daemon.json文件内容如下
+
+
+
+~~~
+
+{
+"registry-mirrors" : [
+    "https://jkfdsf2u.mirror.aliyuncs.com",
+    "https://registry.docker-cn.com"
+  ],
+  "insecure-registries" : [
+    "docker-registry.zjq.com"
+  ],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "10"
+  },
+  "data-root": "/data/docker"
+}
+~~~
+
+
+
+
+
+拉取docker pull镜像
+
+~~~
+docker pull postgres:12-alpine
+
+
+~~~
+
+。。。。 配置不够cpu直接干到100%    看看有没有 简化的方法
+
+
+
+11.30日
+
+还是执着一点  弄了一台2核2gb的服务器 用docker部署
+
+首先是源的配置 安装docker 安装docker-compose
+
+然后是构建项目中出现的问题 反复构建
+
+赋予权限等
+
+权限问题在ubuntu中也是一个很重要的问题  哪个用户使用ubuntu也会导致不同的结果
+
+
+
+~~~~
+从 ls -ld 命令的输出可以看到，/home/ubuntu/projects/simplebank 目录的所有者和所属组都是 ubuntu，权限也允许当前用户进行访问。这意味着该目录的所有权和权限没有问题。
+
+但根据 Git 提示的错误信息，Git 依然检测到目录的所有权问题，因此需要添加该目录到 安全目录 列表中。
+
+解决方案：
+运行以下命令，将该目录添加到 Git 的安全目录列表中：
+
+
+git config --global --add safe.directory /home/ubuntu/projects/simplebank
+~~~~
+
+
+
+看到希望了
+
+~~~
+root@VM-12-4-ubuntu:/home/ubuntu/projects/simplebank# docker ps
+CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
+root@VM-12-4-ubuntu:/home/ubuntu/projects/simplebank# docker ps -a
+CONTAINER ID   IMAGE          COMMAND                  CREATED          STATUS    PORTS                                       NAMES
+758e9432d178   e054039bb12c   "/app/start.sh /app/…"   27 minutes ago   Created   0.0.0.0:8080->8080/tcp, :::8080->8080/tcp   simplebank
+~~~
+
+
+
+还需要配置数据库吗？？我有点蒙了
+
+
+
+docker run与docker start的区别
+
+
+
+
+
+![image-20241130213549768](C:\Users\30413\AppData\Roaming\Typora\typora-user-images\image-20241130213549768.png)
+
+
+
+
+
+#### 五.2024年 11.30日 21：27分  成了把项目成功部署到了云服务器上太不容易了
+
+
+
+![image-20241130213014346](C:\Users\30413\AppData\Roaming\Typora\typora-user-images\image-20241130213014346.png)
+
+
+
+
+
+![image-20241130213026028](C:\Users\30413\AppData\Roaming\Typora\typora-user-images\image-20241130213026028.png)
+
+
+
+
+
+![image-20241130213036904](C:\Users\30413\AppData\Roaming\Typora\typora-user-images\image-20241130213036904.png)
+
+
+
+
+
+![image-20241130213050934](C:\Users\30413\AppData\Roaming\Typora\typora-user-images\image-20241130213050934.png)
+
+
+
+
+
+
+
+
+
+~~~
+root@VM-12-4-ubuntu:/home/ubuntu/projects/simplebank# docker run --name simplebank -p 80:8080 -e GIN_MODE=release -e DB_SOURCE="postgresql://root:secret@172.17.0.2:5432/simple_bank?sslmode=disable" simplebank:latest
+run db migrations
+2024/11/30 13:25:56 no change
+2024/11/30 13:25:56 Finished after 977.24µs
+2024/11/30 13:25:56 Closing source and database
+start the app
+Received request: {Username:Zhonghe FullName:zhaohzonghe Email:3041322213@qq.com Password:zzh123456}
+[GIN] 2024/11/30 - 13:26:07 | 200 |   75.179039ms |  202.97.179.126 | POST     "/users"
+~~~
+
+
+
+![image-20241130213341117](C:\Users\30413\AppData\Roaming\Typora\typora-user-images\image-20241130213341117.png)
+
+
+
+![image-20241130214233993](C:\Users\30413\AppData\Roaming\Typora\typora-user-images\image-20241130214233993.png)
+
+
+
+
+
+为什么把端口8080:8080改成 80:8080就好用了 啊啊啊啊好兴奋 感谢老哥们
+
+
+
+从把项目移动到 ubuntu 配置dockers环境
+
+使用docker build构建项目
+
+然后就是用postman测试
+
+这期间 多次使用的
+
+##### Docker 指令 
+
+docker run 
+
+docker images
+
+ docker ps -a 
+
+docekr pull
+
+docker build -t simplebank:latest .
+
+docker network create bank_network
+
+docker network rm 0fd871187ef1
+
+docker rm simplebank
+
+docker rmi 
+
+docker network connect bank-network postgres12
+
+docker network ls
+
+docker container inspect postgres12
+
+
+
+目前服务器中的 postgres12大体网络模式
+
+~~~
+root@VM-12-4-ubuntu:/home/ubuntu/projects/simplebank# docker container inspect postgres12
+[
+    {
+        "Id": "100ff1a5f0bf6e1f0447fff800aaa00ba54edc2cf19826eef512a442c2ec3a47",
+        "Created": "2024-11-30T09:24:02.785101065Z",
+        "Path": "docker-entrypoint.sh",
+        "Args": [
+            "postgres"
+        ],
+        "State": {
+            "Status": "running",
+            "Running": true,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 315509,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "2024-11-30T11:54:14.985494404Z",
+            "FinishedAt": "2024-11-30T11:35:40.792853655Z"
+        },
+        "Image": "sha256:486566ce0ca8f59e321b2b5999de4b50237b2c60bcc3414d8a602fb96cb12c6f",
+        "ResolvConfPath": "/data/docker/containers/100ff1a5f0bf6e1f0447fff800aaa00ba54edc2cf19826eef512a442c2ec3a47/resolv.conf",
+        "HostnamePath": "/data/docker/containers/100ff1a5f0bf6e1f0447fff800aaa00ba54edc2cf19826eef512a442c2ec3a47/hostname",
+        "HostsPath": "/data/docker/containers/100ff1a5f0bf6e1f0447fff800aaa00ba54edc2cf19826eef512a442c2ec3a47/hosts",
+        "LogPath": "/data/docker/containers/100ff1a5f0bf6e1f0447fff800aaa00ba54edc2cf19826eef512a442c2ec3a47/100ff1a5f0bf6e1f0447fff800aaa00ba54edc2cf19826eef512a442c2ec3a47-json.log",
+        "Name": "/postgres12",
+        "RestartCount": 0,
+        "Driver": "overlay2",
+        "Platform": "linux",
+        "MountLabel": "",
+        "ProcessLabel": "",
+        "AppArmorProfile": "docker-default",
+        "ExecIDs": null,
+        "HostConfig": {
+            "Binds": null,
+            "ContainerIDFile": "",
+            "LogConfig": {
+                "Type": "json-file",
+                "Config": {
+                    "max-file": "10",
+                    "max-size": "10m"
+            
+            "Networks": {
+                "bank_network": {
+                    "IPAMConfig": {},
+                    "Links": null,
+                    "Aliases": [],
+                    "MacAddress": "02:42:ac:12:00:02",
+                    "DriverOpts": {},
+                    "NetworkID": "c2a3ada685148d5607a5a6fc39e1690e5fbd161f0607df5a3a189f74ced100fa",
+                    "EndpointID": "07a57c58250657bf968d33d1f93cea6e9225d0cae314648d1b1c639c3811c9c1",
+                    "Gateway": "172.18.0.1",
+                    "IPAddress": "172.18.0.2",
+                    "IPPrefixLen": 16,
+                    "IPv6Gateway": "",
+                    "GlobalIPv6Address": "",
+                    "GlobalIPv6PrefixLen": 0,
+                    "DNSNames": [
+                        "postgres12",
+                        "100ff1a5f0bf"
+                    ]
+                },
+                "bridge": {
+                    "IPAMConfig": null,
+                    "Links": null,
+                    "Aliases": null,
+                    "MacAddress": "02:42:ac:11:00:02",
+                    "DriverOpts": null,
+                    "NetworkID": "83e7fddfe207131e6199fb11fb5daa38bf044b67817fba2de02bd7f1639d4bb8",
+                    "EndpointID": "d9449d910f4e7be735031acb301f0e418999b091bb8c75450fecf983eca2aa24",
+                    "Gateway": "172.17.0.1",
+                    "IPAddress": "172.17.0.2",
+                    "IPPrefixLen": 16,
+                    "IPv6Gateway": "",
+                    "GlobalIPv6Address": "",
+                    "GlobalIPv6PrefixLen": 0,
+                    "DNSNames": null
+                }
+            }
+        }
+    }
+]
+
+~~~
+
+
+
+
+
+
+
+---
+
+
+
+还是看跟着课程走一走吧
+
+#### ![image-20241129195348180](C:\Users\30413\AppData\Roaming\Typora\typora-user-images\image-20241129195348180.png)
+
+
+
+
+
+![image-20241129195504285](C:\Users\30413\AppData\Roaming\Typora\typora-user-images\image-20241129195504285.png)
+
+
+
+AWS的EKS
+
+
+将工作节点 添加到EKS集群 使用 kubectl 连接到集群
+
+
+
+##### 如何创建新的EKS集群并向其中添加工作节点
+
+大多都是用AWS目前没有卡还是先不要弄了
+
+学习一下其他的知识
+
+
+
+#### 进阶后端
+
+master haha
+
+
+
+管理用户会话
+
+用PASETO JWT作为基于令牌的身份验证
+
+因为这些是无状态设计 这些令牌不会存储到数据库中 寿命应该很短
+
+他们的过期时间通常为10~15分钟 如果token每次都在这么短时间过期重新输入用户名和密码一定不是一个好的体验
+
+
+
+
+
+刷新令牌
+
+在服务器上维护有状态的会话
+
+ 它将存储在数据库中 生命周期长
+
+
+
+创建一个新的字段添加到app.env中
+
+REFRESH_TOKEN_DURATION=24h
+
+
+
+同时config中添加新字段
+
+  RefreshTokenDuration time.Duration `mapstructure:"REFRESH_TOKEN_DURATION"`
+
+
+
+使用指令 migrate create -ext sql -dir db/migration -seq  <migration_name>
+
+~~~shell
+，用于创建一个新的迁移文件。该指令参数的意义如下：<migration_name>表示迁移文件的名称；-ext sql指定迁移文件的扩展名；-dir db/migration定义了迁移文件的存储路径；-seq代表创建顺序迁移文件，并在文件名前加上序号。这个命令会在指定目录下生成两个文件，一个用于执行迁移（.up.sql），另一个用于回滚迁移（.down.sql），以实现数据库的版本控制和变更管理。
+~~~
+
+
+
+
+
+##### add_sessions.up.sql
+
+
+
+
+
+~~~
+CREATE TABLE "sessions" (
+  "id" uuid PRIMARY KEY,
+  "username" varchar NOT NULL,
+  "refresh_token" varchar NOT NULL,
+  "user_agent" varchar NOT NULL,
+  "client_ip" varchar NOT NULL,
+  "is_blocked" boolean NOT NULL DEFAULT false,
+  "expires_at" timestamptz NOT NULL,
+  "created_at" timestamptz NOT NULL DEFAULT (now())
+);
+
+ALTER TABLE "sessions" ADD FOREIGN KEY ("username") REFERENCES "users" ("username");
+
+~~~
+
+  "is_blocked" boolean NOT NULL DEFAULT false,  添加bool列来阻止会话 以防止刷新令牌被泄露
+
+ "expires_at" timestamptz NOT NULL, 刷新令牌的过期时间
+
+
+
+ALTER TABLE "sessions" ADD FOREIGN KEY ("username") REFERENCES "users" ("username"); 外键约束
+
+
+
+
+
+#### 11.30日
+
+
+
+理清楚`sqlc generate` 到底是什么意思
+
+
+
+依赖于sqlc.yml文件
+
+~~~yaml
+version: "2"
+sql:
+- schema: "./db/migration"
+  queries: "./db/query"
+  engine: "postgresql"
+  gen:
+    go: 
+      package: "db"
+      out: "./db/sqlc"
+      sql_package: "pgx/v5"
+      emit_json_tags: true
+      emit_interface: true
+      emit_empty_slices: true
+      overrides:
+        - db_type: "timestamptz"
+          go_type: "time.Time"
+        - db_type: "uuid"
+          go_type: "github.com/google/uuid.UUID"
+~~~
+
+
+
+
+
+指定一些列路径 自动生成代码到哪个位置
+
+依赖的是.sql文件自动生成 相关的代码
